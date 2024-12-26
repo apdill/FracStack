@@ -1,0 +1,6 @@
+setup.py
+fracstack.egg-info/PKG-INFO
+fracstack.egg-info/SOURCES.txt
+fracstack.egg-info/dependency_links.txt
+fracstack.egg-info/requires.txt
+fracstack.egg-info/top_level.txt
