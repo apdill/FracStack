@@ -1,4 +1,4 @@
-from .boxcount import boxcount, compute_fractal_dimension, get_sizes, get_mincount
+from .boxcount import boxcount, compute_dimension, get_sizes, get_coverage_mincount
 from .image_processing import (
     process_image_to_array,
     pad_image_for_boxcounting,
@@ -18,9 +18,10 @@ from .visualization import (
     illustrate_boxcounting_regions
 )
 from .core import (
-    measure_D,
+    measure_dimension,
     analyze_image,
-    analyze_images
+    analyze_images,
+    portfolio_plot
 )
 
 __version__ = '0.1.0'
@@ -29,12 +30,14 @@ __author__ = 'DillyDilly'
 __all__ = [
     # Core functionality
     'boxcount',
-    'compute_fractal_dimension',
+    'compute_dimension',
     'get_sizes',
-    'get_mincount',
-    'measure_D',
+    'get_coverage_mincount',
+    'get_coverage_entropy',
+    'measure_dimension',
     'analyze_image',
     'analyze_images',
+    'portfolio_plot',
     
     # Image processing
     'process_image_to_array',

@@ -3,11 +3,22 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from skimage import measure
 from skimage.measure import find_contours
-from tqdm import tqdm
+from tqdm.auto import tqdm
 import os
 from .image_processing import invert_array
 
-def plot_scaling_results(f_name, input_array, valid_sizes, valid_counts, d_value, fit, r2, show_image = True, save=False, save_path=None, invert = False):
+def plot_scaling_results(f_name, 
+                         input_array, 
+                         valid_sizes, 
+                         valid_measures, 
+                         d_value, 
+                         fit, 
+                         r2, 
+                         mode = 'D0', 
+                         show_image = True, 
+                         save=False, 
+                         save_path=None, 
+                         invert = False):
     
     # Plot the original image
     if show_image == True:
@@ -23,13 +34,16 @@ def plot_scaling_results(f_name, input_array, valid_sizes, valid_counts, d_value
         ax1.axis('off')  
     
         # Plot the scaling (log-log) plot
-        ax2.scatter(np.log10(valid_sizes), np.log10(valid_counts), color='black', )
-        ax2.plot(np.log10(valid_sizes), fit[0] * np.log10(valid_sizes) + fit[1], color='red')
-        ax2.set_title(r'Scaling Plot: $Log_{10}(Counts)$ vs. $Log_{10}(Box Size)$', fontsize = 22)
-
-        # fitted_line_text = f'Fitted line: y = {fit[0]:.3f}x + {fit[1]:.2f}\nR² = {r2:.4f}'
-        # ax2.text(0.5, 0.95, fitted_line_text, transform=ax2.transAxes, fontsize=22,
-        #          verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.2))
+        if mode == 'D0':
+            ax2.scatter(np.log10(valid_sizes), np.log10(valid_measures), color='black')
+            ax2.plot(np.log10(valid_sizes), fit[0] * np.log10(valid_sizes) + fit[1], color='red')
+            ax2.set_title(r'Scaling Plot: $Log_{10}(Counts)$ vs. $Log_{10}(Box Size)$', fontsize = 22)
+            ax2.set_ylabel(r'$Log_{10}(N_L)$', fontsize = 22)
+        elif mode == 'D1':
+            ax2.scatter(np.log10(valid_sizes), valid_measures, color='black')
+            ax2.plot(np.log10(valid_sizes), fit[0] * np.log2(valid_sizes) + fit[1], color='red')
+            ax2.set_title(r'Shannon Entropy vs. $Log_{2}(Box Size)$', fontsize = 22)
+            ax2.set_ylabel(r'$H(L)$', fontsize = 22)
 
         bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(valid_sizes.min())} \nLargest box size (L) = {np.round(valid_sizes.max())}"
         
@@ -38,12 +52,13 @@ def plot_scaling_results(f_name, input_array, valid_sizes, valid_counts, d_value
         ax2.grid(True)
         ax2.tick_params(axis='both', which='major', labelsize=18)
         ax2.set_xlabel(r'$Log(L)$', fontsize = 22)
-        ax2.set_ylabel(r'$Log(N_L)$', fontsize = 22)
+        
 
         if save == True:
 
             save_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]}_{d_value:.3f}.png")
-            fig.savefig(save_file)
+            os.makedirs(os.path.dirname(save_file), exist_ok=True)
+            plt.savefig(save_file)
         
         plt.tight_layout()
         plt.show()
@@ -53,15 +68,15 @@ def plot_scaling_results(f_name, input_array, valid_sizes, valid_counts, d_value
 
         plt.figure(figsize=(11,11))
 
-        plt.scatter(np.log10(valid_sizes), np.log10(valid_counts), color='black', )
-        plt.plot(np.log10(valid_sizes), fit[0] * np.log10(valid_sizes) + fit[1], color='red')
-        plt.title(f"{os.path.splitext(f_name)[0]}", fontsize = 22)
-        # fitted_line_text = f'Fitted line: y = {fit[0]:.3f}x + {fit[1]:.2f}\nR² = {r2:.4f}'
-        # ax2.text(0.5, 0.95, fitted_line_text, transform=ax2.transAxes, fontsize=22,
-        #          verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.2))
+        if mode == 'D0':
+            plt.scatter(np.log10(valid_sizes), np.log10(valid_measures), color='black', )
+            plt.plot(np.log10(valid_sizes), fit[0] * np.log10(valid_sizes) + fit[1], color='red')
+        elif mode == 'D1':
+            plt.scatter(np.log10(valid_sizes), valid_measures, color='black')
+            plt.plot(np.log10(valid_sizes), fit[0] * -np.log2(1/valid_sizes) + fit[1], color='red')
 
+        plt.title(f"{os.path.splitext(f_name)[0]}", fontsize = 22)
         bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(valid_sizes.min())} \nLargest box size (L) = {np.round(valid_sizes.max())}"
-        
         plt.text(0.5, 0.95, bc_info_text, fontsize=22, transform=plt.gca().transAxes, verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.1))
         plt.grid(True)
         plt.tick_params(axis='both', which='major', labelsize=18)
@@ -70,7 +85,8 @@ def plot_scaling_results(f_name, input_array, valid_sizes, valid_counts, d_value
         
         if save == True:
 
-            save_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]} scaling_plot.png")
+            save_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]}_scaling_plot.png")
+            os.makedirs(os.path.dirname(save_file), exist_ok=True)
             plt.savefig(save_file)
         
         plt.tight_layout()

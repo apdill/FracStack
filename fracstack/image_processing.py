@@ -75,9 +75,9 @@ def pad_image_for_boxcounting(input_array, largest_box_size, pad_factor = 1, man
     padded_array = np.pad(input_array, 
                           pad_width=((pad_top, pad_bottom), (pad_left, pad_right)),
                           mode='constant', 
-                          constant_values=0)  # Pad with zeros
+                          constant_values=0)
 
-    return padded_array
+    return padded_array.astype(bool)
 
 def calculate_diameter(region):
     return region.equivalent_diameter
