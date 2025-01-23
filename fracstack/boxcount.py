@@ -4,8 +4,8 @@ from sklearn.metrics import r2_score
 from .image_processing import invert_array
 import pandas as pd
 import multiprocessing
-from functools import partial
-import time
+from scipy.stats import t
+
 
 def get_sizes(num_sizes, minsize, maxsize):
     sizes = list(np.around(np.geomspace(minsize, maxsize, num_sizes)).astype(int))
@@ -25,7 +25,7 @@ def get_coverage_mincount(array, size, mask=None, num_offsets=1):
     constrained by an optional mask, considering multiple random grid offsets.
 
     Args:
-        array (np.ndarray): 2D binary numpy array to analyze.
+        array (np.ndarray): 2D binary numpy array to analyze.   
         size (int): Size of the boxes (size x size).
         mask (np.ndarray, optional): Optional 2D binary mask. Defaults to None.
         num_offsets (int, optional): Number of random grid offsets to test (includes centered grid).
