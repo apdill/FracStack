@@ -9,8 +9,8 @@ from .image_processing import invert_array
 
 def plot_scaling_results(f_name, 
                          input_array, 
-                         valid_sizes, 
-                         valid_measures, 
+                         sizes, 
+                         measures, 
                          d_value, 
                          fit, 
                          r2, 
@@ -35,23 +35,23 @@ def plot_scaling_results(f_name,
     
         # Plot the scaling (log-log) plot
         if mode == 'D0':
-            ax2.scatter(np.log10(valid_sizes), np.log10(valid_measures), color='black')
-            ax2.plot(np.log10(valid_sizes), fit[0] * np.log10(valid_sizes) + fit[1], color='red')
+            ax2.scatter(np.log10(sizes), np.log10(measures), color='black')
+            ax2.plot(np.log10(sizes), fit[0] * np.log10(sizes) + fit[1], color='red')
             ax2.set_title(r'Scaling Plot: $Log_{10}(Counts)$ vs. $Log_{10}(Box Size)$', fontsize = 22)
             ax2.set_ylabel(r'$Log_{10}(N_L)$', fontsize = 22)
         elif mode == 'D1':
-            ax2.scatter(np.log10(valid_sizes), valid_measures, color='black')
-            ax2.plot(np.log10(valid_sizes), fit[0] * np.log2(valid_sizes) + fit[1], color='red')
+            ax2.scatter(np.log10(sizes), measures, color='black')
+            ax2.plot(np.log10(sizes), fit[0] * np.log2(sizes) + fit[1], color='red')
             ax2.set_title(r'Shannon Entropy vs. $Log_{2}(Box Size)$', fontsize = 22)
             ax2.set_ylabel(r'$H(L)$', fontsize = 22)
 
-        bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(valid_sizes.min())} \nLargest box size (L) = {np.round(valid_sizes.max())}"
+        bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(sizes.min())} \nLargest box size (L) = {np.round(sizes.max())}"
         
         ax2.text(0.55, 0.95, bc_info_text, transform=ax2.transAxes, fontsize=22,
                 verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.1))
         ax2.grid(True)
         ax2.tick_params(axis='both', which='major', labelsize=18)
-        ax2.set_xlabel(r'$Log(L)$', fontsize = 22)
+        ax2.set_xlabel(r'$Log_{10}(L)$', fontsize = 22)
         
 
         if save == True:
@@ -69,14 +69,14 @@ def plot_scaling_results(f_name,
         plt.figure(figsize=(11,11))
 
         if mode == 'D0':
-            plt.scatter(np.log10(valid_sizes), np.log10(valid_measures), color='black', )
-            plt.plot(np.log10(valid_sizes), fit[0] * np.log10(valid_sizes) + fit[1], color='red')
+            plt.scatter(np.log10(sizes), np.log10(measures), color='black', )
+            plt.plot(np.log10(sizes), fit[0] * np.log10(sizes) + fit[1], color='red')
         elif mode == 'D1':
-            plt.scatter(np.log10(valid_sizes), valid_measures, color='black')
-            plt.plot(np.log10(valid_sizes), fit[0] * -np.log2(1/valid_sizes) + fit[1], color='red')
+            plt.scatter(np.log10(sizes), measures, color='black')
+            plt.plot(np.log10(sizes), fit[0] * -np.log2(1/sizes) + fit[1], color='red')
 
         plt.title(f"{os.path.splitext(f_name)[0]}", fontsize = 22)
-        bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(valid_sizes.min())} \nLargest box size (L) = {np.round(valid_sizes.max())}"
+        bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(sizes.min())} \nLargest box size (L) = {np.round(sizes.max())}"
         plt.text(0.5, 0.95, bc_info_text, fontsize=22, transform=plt.gca().transAxes, verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.1))
         plt.grid(True)
         plt.tick_params(axis='both', which='major', labelsize=18)
@@ -260,10 +260,13 @@ def show_largest_box_frame(input_array, sizes, counts, invert=False):
     return largest_box_count
 
 
-def show_image_info(fname, d_value, input_array, sizes, figsize = (11,11), save = False, save_path = None):
+def show_image_info(fname, d_value, input_array, sizes, invert = False, figsize = (11,11), save = False, save_path = None):
 
     plt.figure(figsize=figsize)
-    plt.imshow(input_array, cmap='gray')
+    if invert is True:
+        plt.imshow(invert_array(input_array), cmap='gray')
+    else:
+        plt.imshow(input_array, cmap='gray')
     plt.axis('off')  # This turns off the axes (ticks and borders)
     plt.title(f"{os.path.splitext(fname)[0]}", fontsize=22)  # Title above the image
     plt.text(0.5, -0.2, 
@@ -274,5 +277,4 @@ def show_image_info(fname, d_value, input_array, sizes, figsize = (11,11), save 
             save_file = os.path.join(save_path, f"image_info.png")
             plt.savefig(save_file, bbox_inches='tight')
         else: print('no save path for image info!')
-    
-    plt.show()  
+

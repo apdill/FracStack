@@ -6,25 +6,25 @@ from tqdm.auto import tqdm # type: ignore
 import matplotlib.pyplot as plt
 import skimage.io as io # type: ignore
 
-from .boxcount import boxcount, compute_dimension
+from .boxcount import boxcount_numba, compute_dimension
 from .image_processing import process_image_to_array, pad_image_for_boxcounting, find_largest_smallest_objects
 from .visualization import plot_scaling_results, show_image_info, plot_object_outlines
 
 
-def measure_dimension(array, mode = 'D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1, pad_factor=2, multiprocessing=True):
+def measure_dimension(array, mode = 'D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1, pad_factor=2):
     if pad_factor is None:
         padded_array = array
     else:
         padded_array = pad_image_for_boxcounting(array, max_size, pad_factor=pad_factor)
         
-    sizes, counts = boxcount(padded_array, mode=mode, min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets, multiprocessing=multiprocessing)
+    sizes, counts = boxcount_numba(padded_array, mode=mode, min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets)
     valid_sizes, valid_counts, d_value, fit, r2, ci_low, ci_high = compute_dimension(sizes, counts)
     return {'D': d_value, 'valid_sizes': valid_sizes, 'valid_counts': valid_counts, 'fit': fit, 'R2': r2, 'ci_low': ci_low, 'ci_high': ci_high}
 
 def analyze_image(input_array = None,
                 image_path = None,
                 save_path = None,
-                save=False, 
+                save_output=False,
                 mode='D0', #D0 for fractal dimension, D1 for information dimension, D2 mass fractal dimension
                 invert=False, 
                 threshold=150,
@@ -32,10 +32,10 @@ def analyze_image(input_array = None,
                 min_size=16, 
                 max_size=None, 
                 num_sizes=100, 
-                num_pos=10,
-                show_image=False,
+                num_offsets=10,
+                show_image=True,
                 plot_objects=False,
-                show_image_info=False,
+                image_info=True,
                 criteria=None):
     """
     Analyze a single image to calculate fractal dimension and other properties.
@@ -44,13 +44,13 @@ def analyze_image(input_array = None,
         image_path (str): Path to the image file
         input_array (ndarray, optional): Input image array if not loading from file
         save_path (str, optional): Path to save results
-        save (bool): Whether to save results to files
+        save_output (bool): Whether to save results to files
         invert (bool): Whether to invert the image
         threshold (int): Threshold value for image binarization
         min_size (int): Minimum box size for box counting
         max_size (int): Maximum box size for box counting (defaults to min_size*10)
         num_sizes (int): Number of box sizes to use
-        num_pos (int): Number of grid positions to test
+        num_offsets (int): Number of grid positions to test
         show_image (bool): Whether to display plots
         plot_objects (bool): Whether to plot object outlines
         criteria (str, optional): Additional criteria string for save path
@@ -69,7 +69,7 @@ def analyze_image(input_array = None,
                 - max_box_size: Maximum box size used
                 - threshold: Threshold value used
                 - num_sizes: Number of box sizes used
-                - num_positions: Number of grid positions tested
+                - num_offsetsitions: Number of grid positions tested
     """
     if image_path is not None:
         f_name = os.path.basename(image_path)
@@ -80,7 +80,7 @@ def analyze_image(input_array = None,
         f_name = 'input_array'
     elif input_array is None and save_path is None and image_path is None:  
         raise ValueError("Either image_path or input_array must be provided. If input_array is provided, provide save_path as well.")
-    elif input_array is not None and save_path is None and image_path is None and save is True:
+    elif input_array is not None and save_path is None and image_path is None and save_output is True:
         raise ValueError("If input_array is provided, provide save_path as well.")
 
     if plot_objects:
@@ -93,31 +93,32 @@ def analyze_image(input_array = None,
     if criteria is None:
         criteria = ''
     
-    if save and save_path is None:
+    if save_output and save_path is None:
         save_dir = os.path.dirname(image_path)
         save_path = os.path.join(save_dir, os.path.splitext(f_name)[0] + f'_{criteria}')
         if not os.path.exists(save_path):
             os.makedirs(save_path)
-    elif save and save_path is not None:
+    elif save_output and save_path is not None:
         save_path = save_path
     else:
         save_path = None
 
-    if pad_factor is None:  
-        padded_input_array = input_array
-    else:
-        padded_input_array = pad_image_for_boxcounting(input_array, max_size, pad_factor=pad_factor)
+    plt.imshow(input_array, cmap='gray')
+    plt.axis('off')
+    plt.show()
 
-    sizes, counts = boxcount(padded_input_array, mode=mode, min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_pos=num_pos, invert=invert)
-    valid_sizes, valid_counts, d_value, fit, r2, ci_low, ci_high = compute_dimension(sizes, counts, mode=mode)
-    plot_scaling_results(f_name, input_array, valid_sizes, valid_counts, d_value, fit, r2, mode=mode, save=save, save_path=save_path, show_image=show_image)
+    fit_info_dict = measure_dimension(input_array, mode=mode, min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets, pad_factor=pad_factor, multiprocessing=True)
+    plot_scaling_results(f_name, invert = invert, input_array=input_array, 
+                         sizes=fit_info_dict['valid_sizes'], measures=fit_info_dict['valid_counts'], 
+                         d_value=fit_info_dict['D'], fit=fit_info_dict['fit'], r2=fit_info_dict['R2'], 
+                         save=save_output, save_path=save_path, show_image=show_image)
     
-    if show_image_info == True:
-        show_image_info(fname=f_name, d_value=d_value, input_array=input_array, sizes=valid_sizes, save=save, save_path=save_path)
+    if image_info:
+        show_image_info(fname=f_name, invert=invert, d_value=fit_info_dict['D'], input_array=input_array, sizes=fit_info_dict['valid_sizes'], save=save_output, save_path=save_path)
     
         print('')
-        print(f"D-value for {f_name}: {d_value:.3f}")
-        print(f"R^2 value for fit: {r2:.6f}\n")
+        print(f"D-value for {f_name}: {fit_info_dict['D']:.3f}")
+        print(f"R^2 value for fit: {fit_info_dict['R2']:.6f}\n")
         print(f"Total pattern width: {input_array.shape[1]}")
         print(f"Total pattern height: {input_array.shape[0]}\n")
         if plot_objects == True:
@@ -126,11 +127,11 @@ def analyze_image(input_array = None,
         print(f"min box width: {min_size:.1f}")
         print(f"max box width: {max_size:.1f}")
 
-    if save:
+    if save_output:
         txt_save_path = os.path.join(save_path, 'image_properties.txt') 
         with open(txt_save_path, mode='w') as file:
-            file.write(f"D-value for {f_name}: {d_value:.3f}\n")
-            file.write(f"R^2 value for fit {r2}\n\n")
+            file.write(f"D-value for {f_name}: {fit_info_dict['D']:.3f}\n")
+            file.write(f"R^2 value for fit {fit_info_dict['R2']}\n\n")
             file.write(f"Total pattern width: {np.max(input_array.shape[1])}\n")
             file.write(f"Total pattern height: {np.max(input_array.shape[0])}\n\n")
             if plot_objects == True:
@@ -146,14 +147,17 @@ def analyze_image(input_array = None,
             norm_array = np.squeeze(norm_array, axis=2)
         img = Image.fromarray(norm_array, mode='L')
         tiff_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]}_thresholded.tif")
-
         img.save(tiff_file, format='TIFF')
 
+    plt.imshow(input_array, cmap='gray')
+    plt.axis('off')
+    plt.show()
+    
     # Create results DataFrame
     results_dict = {
         'filename': f_name,
-        'd_value': d_value,
-        'r2': r2,
+        'd_value': fit_info_dict['D'],
+        'r2': fit_info_dict['R2'],
         'pattern_width': input_array.shape[1],
         'pattern_height': input_array.shape[0],
         'smallest_diameter': smallest_diameter if plot_objects == True else np.nan,
@@ -162,14 +166,14 @@ def analyze_image(input_array = None,
         'max_box_size': max_size,
         'threshold': threshold,
         'num_sizes': num_sizes,
-        'num_positions': num_pos
+        'num_offsets': num_offsets
     }
 
     results_df = pd.DataFrame([results_dict])
 
     return results_df
 
-def analyze_images(base_path, save=False, invert=False, threshold=150, min_size=16, max_size=None, num_sizes=100, num_pos=10):
+def analyze_images(base_path, save=False, invert=False, threshold=150, min_size=16, max_size=None, num_sizes=100, num_offsets=10, criteria = None):
     """
     Analyze images in a directory to calculate fractal dimensions and other properties.
     
@@ -181,7 +185,7 @@ def analyze_images(base_path, save=False, invert=False, threshold=150, min_size=
         min_size (int): Minimum box size for box counting
         max_size (int): Maximum box size for box counting (defaults to min_size*100)
         num_sizes (int): Number of box sizes to use
-        num_pos (int): Number of grid positions to test
+        num_offsets (int): Number of grid positions to test
     
     Returns:
         pd.DataFrame: DataFrame containing image names and D values
@@ -200,18 +204,13 @@ def analyze_images(base_path, save=False, invert=False, threshold=150, min_size=
         im_path = os.path.join(base_path, f_name)
         input_array = process_image_to_array(im_path, threshold=threshold, invert=invert).astype(np.uint8)
         
-        im = io.imread(im_path)
-        print(np.max(np.unique(im)))
-
-        plt.imshow(input_array, cmap='gray')
-        plt.show()
-
         largest_object, smallest_object, largest_diameter, smallest_diameter, labeled_image = find_largest_smallest_objects(input_array)
 
         if max_size is None:
             max_size = min_size * 100
 
-        criteria = f'threshold={threshold}'
+        if criteria is None:
+            criteria = ''
         
         if save:
             save_path = os.path.join(base_path, os.path.splitext(f_name)[0] + f'_{criteria}')
@@ -221,16 +220,14 @@ def analyze_images(base_path, save=False, invert=False, threshold=150, min_size=
         else:
             save_path = None
 
-        padded_input_array = pad_image_for_boxcounting(input_array, max_size, pad_factor=1)
-        sizes, counts = boxcount(padded_input_array, min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_pos=num_pos)
-        valid_sizes, valid_counts, d_value, fit, r2 = compute_dimension(sizes, counts)
+        fit_info_dict = measure_dimension(input_array, mode='D0', min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets, multiprocessing=True)
         
-        plot_scaling_results(f_name, padded_input_array, valid_sizes, valid_counts, d_value, fit, r2, save=save, save_path=save_path, show_image=False)
-        show_image_info(fname=f_name, d_value=d_value, input_array=input_array, sizes=valid_sizes, save=save, save_path=save_path)
+        plot_scaling_results(f_name, invert = invert, input_array=input_array, sizes=fit_info_dict['valid_sizes'], measures=fit_info_dict['valid_counts'], d_value=fit_info_dict['D'], fit=fit_info_dict['fit'], r2=fit_info_dict['R2'], save=save, save_path=save_path, show_image=True)
+        show_image_info(fname=f_name, invert=invert, d_value=fit_info_dict['D'], input_array=input_array, sizes=fit_info_dict['valid_sizes'], save=save, save_path=save_path)
         
         print('')
-        print(f"D-value for {f_name}: {d_value:.3f}")
-        print(f"R^2 value for fit: {r2:.6f}\n")
+        print(f"D-value for {f_name}: {fit_info_dict['D']:.3f}")
+        print(f"R^2 value for fit: {fit_info_dict['R2']:.6f}\n")
         print(f"Total pattern width: {input_array.shape[1]}")
         print(f"Total pattern height: {input_array.shape[0]}\n")
         print(f"Smallest object diameter: {smallest_diameter:.1f}")
@@ -238,13 +235,13 @@ def analyze_images(base_path, save=False, invert=False, threshold=150, min_size=
         print(f"min box width: {min_size:.1f}")
         print(f"max box width: {max_size:.1f}")
 
-        D_value_list.append((os.path.splitext(f_name)[0], d_value, min_size, max_size, r2))
+        D_value_list.append((os.path.splitext(f_name)[0], fit_info_dict['D'], min_size, max_size, fit_info_dict['R2']))
 
         if save:
             txt_save_path = os.path.join(save_path, 'image_properties.txt') 
             with open(txt_save_path, mode='w') as file:
-                file.write(f"D-value for {f_name}: {d_value:.3f}\n")
-                file.write(f"R^2 value for fit {r2}\n\n")
+                file.write(f"D-value for {f_name}: {fit_info_dict['D']:.3f}\n")
+                file.write(f"R^2 value for fit {fit_info_dict['R2']}\n\n")
                 file.write(f"Total pattern width: {np.max(input_array.shape[1])}\n")
                 file.write(f"Total pattern height: {np.max(input_array.shape[0])}\n\n")
                 file.write(f"Smallest object diameter: {smallest_diameter:.1f}\n")
@@ -283,7 +280,7 @@ def portfolio_plot(input_array = None,
                 min_size=16, 
                 max_size=None, 
                 num_sizes=100, 
-                num_pos=100,
+                num_offsets=100,
                 figsize=(21, 7),
                 save_dir = None,
                 f_name = None,
@@ -300,14 +297,14 @@ def portfolio_plot(input_array = None,
 
     padded_input_array = pad_image_for_boxcounting(input_array, max_size, pad_factor=2)
 
-    sizes, counts = boxcount(padded_input_array, mode='D0', min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_pos=num_pos)
+    sizes, counts = boxcount(padded_input_array, mode='D0', min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets)
     valid_sizes_d0, valid_counts, d_value_d0, fit_d0, r2_d0 = compute_dimension(sizes, counts, mode='D0')
 
     if target_D0 is not None and (np.abs(d_value_d0 - target_D0) > 0.025 or r2_d0 < R2_D0_threshold):
         print(f"Skipping, d0 = {d_value_d0:.2f}, r2 = {r2_d0:.6f}")
         return None
     
-    sizes, counts = boxcount(padded_input_array, mode='D1', min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_pos=num_pos)
+    sizes, counts = boxcount(padded_input_array, mode='D1', min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets)
     valid_sizes_d1, valid_entropies, d_value_d1, fit_d1, r2_d1 = compute_dimension(sizes, counts, mode='D1')
 
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=figsize)
@@ -342,7 +339,7 @@ def portfolio_plot(input_array = None,
         'min_box_size': min_size,
         'max_box_size': max_size,
         'num_sizes': num_sizes,
-        'num_pos': num_pos,
+        'num_offsets': num_offsets,
         'image_width': input_array.shape[1],
         'image_height': input_array.shape[0],
     }

@@ -44,7 +44,7 @@ def process_image_to_array(file_path, threshold=None, invert = False):
 
     return binary_image_array
 
-def pad_image_for_boxcounting(input_array, largest_box_size, pad_factor = 1, manual_pad = 0, invert = False):
+def pad_image_for_boxcounting(input_array, max_size, pad_factor = 1, manual_pad = 0, invert = False):
     """
     Pads the input image symmetrically to ensure the grid fully covers it during box counting.
     
@@ -62,8 +62,8 @@ def pad_image_for_boxcounting(input_array, largest_box_size, pad_factor = 1, man
     height, width = input_array.shape
 
     # Calculate new dimensions
-    new_height = int(np.ceil(height / largest_box_size) *  largest_box_size * pad_factor + manual_pad)
-    new_width = int(np.ceil(width / largest_box_size) *  largest_box_size * pad_factor + manual_pad)
+    new_height = int(np.ceil(height / max_size) *  max_size * pad_factor + manual_pad)
+    new_width = int(np.ceil(width / max_size) *  max_size * pad_factor + manual_pad)
 
     # Calculate padding on each side
     pad_top = (new_height - height) // 2

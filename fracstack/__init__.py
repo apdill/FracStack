@@ -1,4 +1,4 @@
-from .boxcount import boxcount, compute_dimension, get_sizes, get_coverage_mincount
+from .boxcount import boxcount, compute_dimension, get_sizes, get_coverage_mincount, boxcount_numba
 from .image_processing import (
     process_image_to_array,
     pad_image_for_boxcounting,
@@ -30,6 +30,7 @@ __author__ = 'DillyDilly'
 __all__ = [
     # Core functionality
     'boxcount',
+    'boxcount_numba',
     'compute_dimension',
     'get_sizes',
     'get_coverage_mincount',

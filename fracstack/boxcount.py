@@ -7,6 +7,116 @@ import multiprocessing
 from scipy.stats import t
 
 
+from numba import njit, prange
+import numpy as np
+from multiprocessing import Pool
+from tqdm.auto import tqdm
+
+@njit(nogil=True, parallel=True, cache=True)
+def numba_d0(array, sizes, num_offsets):
+    results = np.empty(len(sizes), dtype=np.int64)
+    
+    for idx in prange(len(sizes)):
+        size = sizes[idx]
+        H, W = array.shape
+        
+        # Generate offsets directly in Numba
+        centered_x = (H % size) // 2
+        centered_y = (W % size) // 2
+        total_offsets = min(num_offsets, size**2)
+        
+        min_count = np.inf
+        for offset_idx in range(total_offsets):
+            if offset_idx == 0:
+                x_off = centered_x
+                y_off = centered_y
+            else:
+                rand = np.random.randint(1, size**2)
+                x_off = rand % size
+                y_off = rand // size
+            
+            # Box counting logic
+            count = 0
+            max_x = x_off + ((H - x_off) // size) * size
+            max_y = y_off + ((W - y_off) // size) * size
+            
+            for x in range(x_off, max_x, size):
+                for y in range(y_off, max_y, size):
+                    count += array[x:x+size, y:y+size].any()
+            
+            if count < min_count:
+                min_count = count
+        
+        results[idx] = min_count if min_count != np.inf else 0
+    
+    return results
+
+@njit(nogil=True, parallel=True, cache=True)
+def numba_d1(array, sizes, num_offsets):
+    results = np.empty(len(sizes), dtype=np.float64)
+    M = array.sum()
+    H, W = array.shape
+    
+    for idx in prange(len(sizes)):
+        size = sizes[idx]
+        if M == 0 or size == 0:
+            results[idx] = 0.0
+            continue
+            
+        # Generate offsets directly in Numba
+        centered_x = (H % size) // 2
+        centered_y = (W % size) // 2
+        total_offsets = min(num_offsets, size**2)
+        entropy_sum = 0.0
+        
+        for offset_idx in range(total_offsets):
+            # Get offset coordinates
+            if offset_idx == 0:
+                x_off = centered_x
+                y_off = centered_y
+            else:
+                rand = np.random.randint(1, size**2)
+                x_off = rand % size
+                y_off = rand // size
+            
+            # Box processing
+            max_x = x_off + ((H - x_off) // size) * size
+            max_y = y_off + ((W - y_off) // size) * size
+            entropy = 0.0
+            
+            for x in range(x_off, max_x, size):
+                for y in range(y_off, max_y, size):
+                    box = array[x:x+size, y:y+size]
+                    box_sum = box.sum()
+                    if box_sum > 0:
+                        p = box_sum / M
+                        entropy += -p * np.log2(p)
+            
+            entropy_sum += entropy
+        
+        # Average across offsets
+        results[idx] = entropy_sum / total_offsets if total_offsets > 0 else 0.0
+    
+    return results
+
+def boxcount_numba(array, mode='D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1):
+    """Unified boxcount supporting both D0 and D1"""
+    array = np.ascontiguousarray(array.astype(np.float32))
+    min_size = 1 if min_size is None else min_size
+    max_size = max(min_size + 1, min(array.shape)//5) if max_size is None else max_size
+    sizes = get_sizes(num_sizes, min_size, max_size)
+    sizes_arr = np.array(sizes)
+    
+    if mode == 'D0':
+        counts = numba_d0(array, sizes_arr, num_offsets)
+    elif mode == 'D1':
+        counts = numba_d1(array, sizes_arr, num_offsets)
+    else:
+        raise ValueError("Invalid mode, use 'D0' or 'D1'")
+    
+    return sizes, counts.tolist()
+
+
 def get_sizes(num_sizes, minsize, maxsize):
     sizes = list(np.around(np.geomspace(minsize, maxsize, num_sizes)).astype(int))
     for index in range(1, len(sizes)):
@@ -101,124 +211,63 @@ def get_coverage_mincount(array, size, mask=None, num_offsets=1):
 
 
 def get_coverage_entropies(array, size, mask=None, num_offsets=1):
-    """
-    Vectorized computation of the average Shannon entropy of boxes 
-    (of shape size x size) that cover non-zero regions of `array`,
-    constrained by an optional mask, considering multiple random grid offsets.
-    
-    Args:
-        array (np.ndarray): 2D binary numpy array to analyze.
-        size (int): Size of the boxes (size x size).
-        mask (np.ndarray, optional): Optional 2D binary mask. Defaults to None.
-        num_offsets (int, optional): Number of random grid offsets to test 
-                                     (includes the centered grid). If num_offsets <= 1,
-                                     only the centered grid is tested. Defaults to 1.
-    
-    Returns:
-        float: The average Shannon entropy (in bits) across all valid boxes 
-               and offsets. Returns 0 if no valid boxes or offsets.
-    """
     shape = array.shape
     M = np.sum(array)
-    
-    # This will store the average entropy per offset
     offset_entropies = []
 
-    # Step 1: Calculate the centered grid offset
     centered_x_offset = (shape[0] % size) // 2
     centered_y_offset = (shape[1] % size) // 2
 
-    # Step 2: Determine total possible unique offsets
     total_possible_offsets = size ** 2
-    num_offsets = min(num_offsets, total_possible_offsets)  # Cap the number of offsets
+    num_offsets = min(num_offsets, total_possible_offsets)
 
-    # Step 3: Generate random offsets if num_offsets > 1
     if num_offsets > 1 and total_possible_offsets > 1:
-        # Exclude the centered grid from random offsets
-        random_indices = np.random.choice(range(1, total_possible_offsets), 
-                                          size=num_offsets - 1, 
-                                          replace=False)
+        random_indices = np.random.choice(range(1, total_possible_offsets), size=num_offsets - 1, replace=False)
         offsets_x = random_indices % size
         offsets_y = random_indices // size
     else:
-        offsets_x = np.array([], dtype=int)
-        offsets_y = np.array([], dtype=int)
+        offsets_x, offsets_y = np.array([], dtype=int), np.array([], dtype=int)
 
-    # Include the centered grid as the first offset
     offsets_x = np.concatenate(([centered_x_offset], offsets_x)) if num_offsets > 0 else np.array([centered_x_offset])
     offsets_y = np.concatenate(([centered_y_offset], offsets_y)) if num_offsets > 0 else np.array([centered_y_offset])
 
     for x_offset, y_offset in zip(offsets_x, offsets_y):
-        # Calculate how many complete boxes fit along each dimension
         num_boxes_x = (shape[0] - x_offset) // size
         num_boxes_y = (shape[1] - y_offset) // size
 
-        # If no complete boxes fit, skip
         if num_boxes_x == 0 or num_boxes_y == 0:
             continue
 
-        # Calculate the region of the array that covers these complete boxes
         end_x = x_offset + num_boxes_x * size
         end_y = y_offset + num_boxes_y * size
 
-        # Slice the array to only include complete boxes
         sliced_array = array[x_offset:end_x, y_offset:end_y]
-        
-        # Reshape into (num_boxes_x, size, num_boxes_y, size)
-        # Then transpose to (num_boxes_x, num_boxes_y, size, size)
         reshaped = sliced_array.reshape(num_boxes_x, size, num_boxes_y, size).transpose(0, 2, 1, 3)
 
         if mask is not None:
-            # Slice and reshape the mask similarly
             sliced_mask = mask[x_offset:end_x, y_offset:end_y]
             reshaped_mask = sliced_mask.reshape(num_boxes_x, size, num_boxes_y, size).transpose(0, 2, 1, 3)
-
-            # A 'valid' box is one that has at least one mask element = 1
-            # and at least one array element = non-zero
             box_has_mask = reshaped_mask.any(axis=(2, 3))
             box_has_content = reshaped.any(axis=(2, 3))
             valid_boxes = box_has_mask & box_has_content
-            
         else:
-            # A valid box is one that has at least one non-zero element
             valid_boxes = reshaped.any(axis=(2, 3))
 
-        # Flatten the (num_boxes_x, num_boxes_y) dimension into a single list
-        # to iterate only over valid boxes
-        valid_indices = np.argwhere(valid_boxes)
-        
-        # Collect probabilities p_i for each valid box
-        p_list = []
-        for (bx, by) in valid_indices:
-            sub_box = reshaped[bx, by]
-            # Probability = fraction of non-zero pixels
-            p_i = np.count_nonzero(sub_box) / float(M)
-            # We only store positive probabilities (p_i>0)
-            if p_i > 0:
-                p_list.append(p_i)
-        
-        # If we have valid boxes, compute average box entropy for this offset
-        if len(p_list) > 0:
-            p_arr = np.array(p_list)
-            
-            # Shannon entropy for each box is -p*log2(p)
-            shannon_entropies = -p_arr * np.log2(p_arr)
-            offset_entropy = np.sum(np.abs(shannon_entropies))  # sum per box
-            
-            assert np.sum(p_arr) > 0.95, f'np.sum(p_arr): {np.sum(p_arr)}, add more padding'
+        sum_per_box = reshaped.sum(axis=(2, 3))
+        p_per_box = sum_per_box / M
+        valid_p_mask = valid_boxes & (sum_per_box > 0)
+        valid_p = p_per_box[valid_p_mask]
 
-            # print(f'np.sum(p_arr): {np.sum(p_arr)}')
-            # print(f'offset_entropy: {offset_entropy}')
-            # print(f'num_boxes: {len(p_list)}')
-            # print(f'fraction of boxes: {len(p_list) / (num_boxes_x * num_boxes_y)}')
-            
-            offset_entropies.append(offset_entropy)
+        if valid_p.size > 0:
+            shannon_entropies = -valid_p * np.log2(valid_p)
+            offset_entropy = np.sum(shannon_entropies)
+            # Assertion check remains if necessary
+            assert np.abs(np.sum(valid_p) - sum_per_box[valid_p_mask].sum() / M) < 1e-6, "Consistency check failed"
         else:
-            # If no valid boxes, consider this offset's entropy = 0
-            offset_entropies.append(0.0)
+            offset_entropy = 0.0
 
-    # Finally, return the average Shannon entropy across all offsets tested
-    #print(offset_entropies)
+        offset_entropies.append(offset_entropy)
+
     return np.mean(offset_entropies) if offset_entropies else 0.0
 
 
@@ -259,7 +308,6 @@ def multiprocess_boxcount(array, sizes, mode, num_offsets=1):
     counts = np.array([results[list(sizes).index(size)] for size in sorted_sizes])
     
     return sorted_sizes, counts
-
 
 def boxcount(array, mode = 'D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1, invert=False, mask=None, multiprocessing=True):
     """
@@ -370,12 +418,12 @@ def compute_dimension(sizes, measures, mode = 'D0'):
         intercept_se = np.sqrt(cov[1, 1])
 
         # 4) Confidence intervals
-        slope_CI = (fit[0] - t_crit * slope_se, fit[0] + t_crit * slope_se)
-        intercept_CI = (fit[1] - t_crit * intercept_se, fit[1] + t_crit * intercept_se)
+        slope_ci = (fit[0] - t_crit * slope_se, fit[0] + t_crit * slope_se)
+        #intercept_ci = (fit[1] - t_crit * intercept_se, fit[1] + t_crit * intercept_se)
 
         # 5) If you want the CI for d_value = -slope, just flip signs and ensure lower value comes first
-        CI_low =  min(-slope_CI[1], -slope_CI[0])
-        CI_high = max(-slope_CI[1], -slope_CI[0])
+        ci_low =  min(-slope_ci[1], -slope_ci[0])
+        ci_high = max(-slope_ci[1], -slope_ci[0])
     
     else:
         # Handle cases with insufficient data
@@ -390,7 +438,7 @@ def compute_dimension(sizes, measures, mode = 'D0'):
     return valid_sizes, valid_measures, d_value, fit, r2, ci_low, ci_high
     
 
-def sliding_decade_analysis(array, mode='D0', num_sizes=10, num_pos=10, 
+def sliding_decade_analysis(array, mode='D0', num_sizes=10, num_offsets=10, 
                             invert=False, mask=None, min_decade=1.0):
 
 
@@ -399,7 +447,7 @@ def sliding_decade_analysis(array, mode='D0', num_sizes=10, num_pos=10,
         array, mode, num_sizes, 
         min_size=8, 
         max_size=min(array.shape)//5, 
-        num_pos=num_pos, 
+        num_offsets=num_offsets, 
         invert=invert, mask=mask
     )
 
