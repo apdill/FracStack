@@ -6,18 +6,18 @@ from tqdm.auto import tqdm # type: ignore
 import matplotlib.pyplot as plt
 import skimage.io as io # type: ignore
 
-from .boxcount import boxcount_numba, compute_dimension
+from .boxcount import boxcount, compute_dimension
 from .image_processing import process_image_to_array, pad_image_for_boxcounting, find_largest_smallest_objects
 from .visualization import plot_scaling_results, show_image_info, plot_object_outlines
 
 
-def measure_dimension(array, mode = 'D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1, pad_factor=2):
+def measure_dimension(array, mode = 'D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1, pad_factor=1.5):
     if pad_factor is None:
         padded_array = array
     else:
         padded_array = pad_image_for_boxcounting(array, max_size, pad_factor=pad_factor)
         
-    sizes, counts = boxcount_numba(padded_array, mode=mode, min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets)
+    sizes, counts = boxcount(padded_array, mode=mode, min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets)
     valid_sizes, valid_counts, d_value, fit, r2, ci_low, ci_high = compute_dimension(sizes, counts)
     return {'D': d_value, 'valid_sizes': valid_sizes, 'valid_counts': valid_counts, 'fit': fit, 'R2': r2, 'ci_low': ci_low, 'ci_high': ci_high}
 
@@ -285,7 +285,9 @@ def portfolio_plot(input_array = None,
                 save_dir = None,
                 f_name = None,
                 target_D0 = None,
-                R2_D0_threshold = 0.999):
+                D0_threshold = 1,
+                R2_D0_threshold = 0,
+                D0_D1_threshold = 1):
     
     assert np.array_equal(input_array/np.max(input_array), input_array.astype(bool)), "Input array must be binary (contain only 0s and 1s)"
 
@@ -295,18 +297,22 @@ def portfolio_plot(input_array = None,
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
 
-    padded_input_array = pad_image_for_boxcounting(input_array, max_size, pad_factor=2)
+    padded_input_array = pad_image_for_boxcounting(input_array, max_size, pad_factor=1.5)
 
     sizes, counts = boxcount(padded_input_array, mode='D0', min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets)
-    valid_sizes_d0, valid_counts, d_value_d0, fit_d0, r2_d0 = compute_dimension(sizes, counts, mode='D0')
-
-    if target_D0 is not None and (np.abs(d_value_d0 - target_D0) > 0.025 or r2_d0 < R2_D0_threshold):
-        print(f"Skipping, d0 = {d_value_d0:.2f}, r2 = {r2_d0:.6f}")
-        return None
+    valid_sizes_d0, valid_counts, d_value_d0, fit_d0, r2_d0, ci_low_d0, ci_high_d0 = compute_dimension(sizes, counts, mode='D0')
     
     sizes, counts = boxcount(padded_input_array, mode='D1', min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets)
-    valid_sizes_d1, valid_entropies, d_value_d1, fit_d1, r2_d1 = compute_dimension(sizes, counts, mode='D1')
+    valid_sizes_d1, valid_entropies, d_value_d1, fit_d1, r2_d1, ci_low_d1, ci_high_d1 = compute_dimension(sizes, counts, mode='D1')
+    
+    D0_D1_check = np.abs(d_value_d0 - target_D0) > D0_D1_threshold
+    R2_check = r2_d0 < R2_D0_threshold  
+    D0_check = np.abs(d_value_d0 - target_D0) > D0_threshold
 
+    if D0_D1_check or R2_check or D0_check:
+        print(f"Skipping, D0 = {d_value_d0:.3f}, D1 = {d_value_d1:.3f}, r2 = {r2_d0:.6f}")
+        return None
+    
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=figsize)
     
     ax1.imshow(input_array, cmap='gray')
@@ -315,7 +321,7 @@ def portfolio_plot(input_array = None,
     
     ax2.scatter(np.log10(valid_sizes_d0), np.log10(valid_counts), color='black')
     ax2.plot(np.log10(valid_sizes_d0), fit_d0[0] * np.log10(valid_sizes_d0) + fit_d0[1], color='red')
-    ax2.text(0.7, 0.95, fr'$D_0$ = {d_value_d0:.2f}' '\n' fr'$R^2$ = {r2_d0:.5f}', transform=ax2.transAxes, fontsize=18, verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.3))
+    ax2.text(0.7, 0.95, fr'$D_0$ = {d_value_d0:.3f}' '\n' fr'$R^2$ = {r2_d0:.5f}', transform=ax2.transAxes, fontsize=18, verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.3))
     ax2.grid(True)
     ax2.set_title('Fractal Dimension', fontsize=22)
     ax2.set_xlabel(r'Log($\epsilon$)', fontsize=18)
@@ -324,7 +330,7 @@ def portfolio_plot(input_array = None,
     ax3.scatter(np.log10(valid_sizes_d1), valid_entropies, color='black')
     ax3.plot(np.log10(valid_sizes_d1), fit_d1[0] * np.log2(valid_sizes_d1) + fit_d1[1], color='red')
     ax3.grid(True)
-    ax3.text(0.7, 0.95, fr'$D_1$ = {d_value_d1:.2f}' '\n' fr'$R^2$ = {r2_d1:.5f}', transform=ax3.transAxes, fontsize=18, verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.3))
+    ax3.text(0.7, 0.95, fr'$D_1$ = {d_value_d1:.3f}' '\n' fr'$R^2$ = {r2_d1:.5f}', transform=ax3.transAxes, fontsize=18, verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.3))
     ax3.set_title('Information Dimension', fontsize=22)
     ax3.set_xlabel(r'Log($\epsilon$)', fontsize=18)
     ax3.set_ylabel(r'$H(\epsilon)$', fontsize=18)

@@ -1,4 +1,4 @@
-from .boxcount import boxcount, compute_dimension, get_sizes, get_coverage_mincount, boxcount_numba
+from .boxcount import boxcount, compute_dimension, numba_d1, numba_d0
 from .image_processing import (
     process_image_to_array,
     pad_image_for_boxcounting,
@@ -21,8 +21,7 @@ from .core import (
     measure_dimension,
     analyze_image,
     analyze_images,
-    portfolio_plot
-)
+    portfolio_plot)
 
 __version__ = '0.1.0'
 __author__ = 'DillyDilly'
@@ -30,11 +29,9 @@ __author__ = 'DillyDilly'
 __all__ = [
     # Core functionality
     'boxcount',
-    'boxcount_numba',
+    'numba_d1',
+    'numba_d0',
     'compute_dimension',
-    'get_sizes',
-    'get_coverage_mincount',
-    'get_coverage_entropy',
     'measure_dimension',
     'analyze_image',
     'analyze_images',

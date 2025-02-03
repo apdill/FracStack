@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from skimage import measure
 from skimage.measure import find_contours
 from tqdm.auto import tqdm
 import os
