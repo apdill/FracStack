@@ -1,10 +1,219 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from skimage.measure import find_contours
+from matplotlib.patches import Rectangle
+from skimage.measure import find_contours # type: ignore
 from tqdm.auto import tqdm
 import os
-from .image_processing import invert_array
+from .image_processing import invert_array, pad_image_for_boxcounting
+from numba import njit # type: ignore
+from .boxcount import generate_random_offsets, numba_d0_optimized, numba_d1_optimized
+
+
+@njit(nogil=True, cache=True)
+def numba_d0_visualize(array, size, offsets):
+    """
+    Numba-accelerated box counting for visualization purposes.
+    Returns the minimum count and the corresponding grid offset.
+    
+    Args:
+        array (np.ndarray): 2D binary array to analyze
+        size (int): Box size to use
+        offsets (np.ndarray): Pre-generated offsets array of shape (num_offsets, 2)
+        
+    Returns:
+        tuple: (min_count, best_x_off, best_y_off) - the minimum count and the corresponding offsets
+    """
+    
+    H, W = array.shape
+    
+    # Calculate actual centered offsets for this array size
+    centered_x = (H % size) // 2
+    centered_y = (W % size) // 2
+    total_offsets = min(offsets.shape[0], size**2)
+    
+    min_count = np.inf
+    best_x_off = centered_x
+    best_y_off = centered_y
+    
+    for offset_idx in range(total_offsets):
+        if offset_idx == 0:
+            x_off = centered_x
+            y_off = centered_y
+        else:
+            # Use pre-generated offsets
+            x_off = offsets[offset_idx, 0] % size
+            y_off = offsets[offset_idx, 1] % size
+        
+        # Box counting logic
+        count = 0
+        max_x = x_off + ((H - x_off) // size) * size
+        max_y = y_off + ((W - y_off) // size) * size
+        
+        for x in range(x_off, max_x, size):
+            for y in range(y_off, max_y, size):
+                count += array[x:x+size, y:y+size].any()
+        
+        if count < min_count:
+            min_count = count
+            best_x_off = x_off
+            best_y_off = y_off
+    
+    return min_count, best_x_off, best_y_off
+
+
+def visualize_box_overlay(array, size, mode='D0', figsize=(10, 10), alpha=0.1, use_min_count=False, 
+                          num_offsets=100, return_count=False, ax=None, gridline_cutoff=128,
+                          pad_factor=1.5, use_optimization=True, sparse_threshold=0.01, seed=None):
+    """
+    Visualize the boxes used in box counting by overlaying them on the binary image.
+    Updated to match the current implementation in portfolio_plot and dynamic_boxcount.
+    
+    Args:
+        array (np.ndarray): 2D binary array to analyze
+        size (int): Size of boxes to visualize
+        mode (str): 'D0' for capacity dimension or 'D1' for information dimension
+        figsize (tuple): Figure size for the plot
+        alpha (float): Transparency of the box overlays
+        use_min_count (bool): If True, use minimum count across offsets; if False, use average count (default: False)
+        num_offsets (int): Number of offsets to try (default: 100)
+        return_count (bool): If True, return the box count
+        ax (matplotlib.axes.Axes, optional): If provided, plot on this axis instead of creating a new figure
+        gridline_cutoff (int): Minimum box size to show grid lines (default: 128)
+        pad_factor (float): Padding factor for box counting (default: 1.5)
+        use_optimization (bool): Whether to use optimized box counting algorithms (default: True)
+        sparse_threshold (float): Threshold for sparse optimization (default: 0.01)
+        seed (int, optional): Random seed for reproducible results
+
+    Returns:
+        int or None: Box count if return_count is True, otherwise None
+    """
+    
+    # Store original array for visualization
+    original_array = array.copy()
+    
+    # Ensure array is contiguous for numba
+    array = np.ascontiguousarray(array.astype(np.float32))
+    
+    # Apply padding if specified (matching portfolio_plot behavior)
+    if pad_factor is not None and pad_factor > 1.0:
+        array = pad_image_for_boxcounting(array, size, pad_factor=pad_factor)
+    
+    H, W = array.shape
+    
+    # Generate offsets using the same method as portfolio_plot
+    offsets = generate_random_offsets([size], num_offsets, seed=seed)
+    
+    # Use the same optimized box counting functions as portfolio_plot
+    if mode == 'D0':
+        if use_optimization:
+            # Calculate sparsity to choose optimization strategy
+            total_pixels = array.size
+            non_zero_pixels = np.count_nonzero(array)
+            sparsity = non_zero_pixels / total_pixels
+            
+            # Use sparse optimization for very sparse arrays
+            if sparsity <= sparse_threshold:
+                from .boxcount import numba_d0_sparse
+                count = numba_d0_sparse(array, np.array([size]), offsets, sparse_threshold, use_min_count)[0]
+            else:
+                count = numba_d0_optimized(array, np.array([size]), offsets, use_min_count)[0]
+        else:
+            from .boxcount import numba_d0
+            count = numba_d0(array, np.array([size]), offsets, use_min_count)[0]
+    elif mode == 'D1':
+        if use_optimization:
+            count = numba_d1_optimized(array, np.array([size]), offsets)[0]
+        else:
+            from .boxcount import numba_d1
+            count = numba_d1(array, np.array([size]), offsets)[0]
+    else:
+        raise ValueError("Invalid mode, use 'D0' or 'D1'")
+    
+    # For visualization, we need to determine which offset was used
+    # We'll use the centered offset for visualization consistency
+    offset_x = (H % size) // 2
+    offset_y = (W % size) // 2
+    
+    # Create figure and plot image (use original array for visualization)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    
+    ax.imshow(original_array, cmap='gray')
+    
+    # Draw grid lines if box size is large enough
+    if size >= gridline_cutoff:
+        # Create complete grid lines across the entire image (using original dimensions)
+        orig_H, orig_W = original_array.shape
+        x_grid = np.arange(offset_x, orig_H + size, size)  
+        y_grid = np.arange(offset_y, orig_W + size, size)  
+        
+        ax.vlines(y_grid, 0, orig_H, colors='gray', linewidth=0.5, alpha=0.5)  
+        ax.hlines(x_grid, 0, orig_W, colors='gray', linewidth=0.5, alpha=0.5)
+    
+    # Calculate the number of boxes in each dimension (using padded array dimensions)
+    num_boxes_x = (H - offset_x + size - 1) // size
+    num_boxes_y = (W - offset_y + size - 1) // size
+    
+    # Calculate offset adjustment if padding was applied
+    orig_H, orig_W = original_array.shape
+    pad_offset_x = (H - orig_H) // 2 if pad_factor is not None and pad_factor > 1.0 else 0
+    pad_offset_y = (W - orig_W) // 2 if pad_factor is not None and pad_factor > 1.0 else 0
+    
+    # Highlight occupied boxes with rectangles
+    for i in range(num_boxes_x):
+        for j in range(num_boxes_y):
+            x = offset_x + i * size
+            y = offset_y + j * size
+            
+            # Calculate box dimensions, handling edge cases
+            box_height = min(size, H - x)
+            box_width = min(size, W - y)
+            
+            # Skip if box is completely outside the image
+            if box_height <= 0 or box_width <= 0:
+                continue
+                
+            # Get the portion of the array for this box
+            box = array[x:x+box_height, y:y+box_width]
+            
+            # Check if box is occupied
+            if mode == 'D0':
+                is_occupied = box.any()
+            elif mode == 'D1':
+                is_occupied = box.sum() > 0
+            
+            if is_occupied:
+                # Adjust coordinates for visualization on original image
+                vis_x = x - pad_offset_x
+                vis_y = y - pad_offset_y
+                vis_height = min(box_height, orig_H - vis_x) if vis_x >= 0 else box_height + vis_x
+                vis_width = min(box_width, orig_W - vis_y) if vis_y >= 0 else box_width + vis_y
+                
+                # Only draw rectangle if it's within the original image bounds
+                if vis_x < orig_H and vis_y < orig_W and vis_height > 0 and vis_width > 0:
+                    vis_x = max(0, vis_x)
+                    vis_y = max(0, vis_y)
+                    
+                    rect = Rectangle((vis_y, vis_x), vis_width, vis_height,
+                              fill=True,
+                              edgecolor='red',
+                              facecolor='red',
+                              alpha=alpha)
+                    ax.add_patch(rect)
+    
+    # Add title with count information
+    count_type = "min" if use_min_count else "avg"
+    ax.set_title(f'{mode} Box Counting: size={size}, count={count:.1f} ({count_type})', fontsize=14)
+    ax.axis('off')
+    
+    if ax is None:
+        plt.tight_layout()
+        plt.show()
+    
+    if return_count:
+        return count
+
 
 def plot_scaling_results(f_name, 
                          input_array, 
@@ -276,4 +485,65 @@ def show_image_info(fname, d_value, input_array, sizes, invert = False, figsize 
             save_file = os.path.join(save_path, f"image_info.png")
             plt.savefig(save_file, bbox_inches='tight')
         else: print('no save path for image info!')
+
+
+
+def showim(im_array, figsize=(4, 4), show_hist=False, nbins=None, bin_width=None, cmap='gray', vmin=None, vmax=None, titles=None):
+    
+    if isinstance(im_array, (list, tuple)):
+        n_images = len(im_array)
+        fig_width, fig_height = figsize
+        plt.figure(figsize=(fig_width * n_images, fig_height))
+        
+        for idx, img in enumerate(im_array):
+            plt.subplot(1, n_images, idx + 1)
+            plt.imshow(img, cmap=cmap, vmin=vmin, vmax=vmax)
+            
+            if titles and isinstance(titles, (list, tuple)) and len(titles) == n_images:
+                plt.title(titles[idx])
+            elif titles and isinstance(titles, str):
+                plt.title(titles)
+            
+            plt.axis('off')
+        plt.tight_layout()
+        
+        plt.show()
+    else:
+        plt.figure(figsize=figsize)
+        
+        if show_hist:
+            plt.subplot(1, 2, 1)
+            plt.imshow(im_array, cmap=cmap, vmin=vmin, vmax=vmax)
+            
+            if titles and isinstance(titles, str):
+                plt.title(titles)
+            
+            plt.axis('off')
+            plt.subplot(1, 2, 2)
+            
+            im_flattened = im_array.ravel()
+            min_val = np.floor(im_flattened.min())
+            max_val = np.ceil(im_flattened.max())
+            
+            if bin_width is not None:
+                bins = np.arange(min_val, max_val + bin_width, bin_width)
+            elif nbins is not None:
+                bins = nbins
+            else:
+                bins = int(max_val - min_val)
+            
+            plt.hist(im_flattened, bins=bins, color='black')
+            plt.xlabel('Intensity Value')
+            plt.ylabel('Frequency')
+            plt.title('Image Intensity Histogram')
+        
+        else:
+            plt.imshow(im_array, cmap=cmap, vmin=vmin, vmax=vmax)
+            
+            if titles and isinstance(titles, str):
+                plt.title(titles)
+            
+            plt.axis('off')
+        plt.tight_layout()
+        plt.show()
 

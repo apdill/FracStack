@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="fracstack",
-    version="0.1.0",
+    version="0.1.1",
     author="DillyDilly",
     author_email="aidend@uoregon.edu",
     description="A package for fractal analysis and box counting with visualization capabilities",
@@ -28,6 +28,8 @@ setup(
         "scipy>=1.6.0",
         "tqdm>=4.50.0",
         "scikit-learn>=0.24.0",
-        "pandas>=2.2.0"
+        "pandas>=2.2.0",
+        "numba>=0.50.0",
+        "Pillow>=8.0.0"
     ],
 )
