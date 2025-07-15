@@ -4,7 +4,7 @@ A Python package for fractal analysis and box counting with advanced visualizati
 
 ## Installation
 
-### For Development (Recommended for Lab Members)
+### For Development
 
 1. Clone the repository:
 ```bash
