@@ -5,8 +5,6 @@ from sklearn.metrics import r2_score
 from scipy.stats import t
 import time
 from numba import njit, prange
-
-
 from .image_processing import pad_image_for_boxcounting
 
 def generate_random_offsets(sizes, num_offsets, seed=None):
@@ -56,6 +54,7 @@ def generate_random_offsets(sizes, num_offsets, seed=None):
             off[i, j + 1:] = off[i, j]
             
     return off
+
 
 def get_pairwise_slopes(sizes, measures, return_second_order=False):
     """
@@ -439,6 +438,7 @@ def detect_plateau_hybrid(sizes,
     else:
         raise ValueError(f"Unknown method: {method}. Use 'pairwise_first', 'median_first', 'intersection', or 'longest'")
 
+
 def filter_by_occupancy(array, sizes, counts,
                         occ_low=0.05, occ_high=0.95):
     """
@@ -494,6 +494,7 @@ def filter_by_occupancy(array, sizes, counts,
     mask = (occupancy > occ_low) & (occupancy < occ_high)
     
     return sizes[mask], counts[mask]
+
 
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d0(array, sizes, offsets, use_min_count=False):
@@ -602,6 +603,7 @@ def numba_d0(array, sizes, offsets, use_min_count=False):
     
     return results
 
+
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d1(array, sizes, offsets):
     """
@@ -693,6 +695,7 @@ def numba_d1(array, sizes, offsets):
     
     return results
 
+
 @njit(nogil=True, cache=True)
 def get_bounding_box(array):
     """
@@ -763,6 +766,7 @@ def get_bounding_box(array):
     
     return min_row, min_col, max_row + 1, max_col + 1
 
+
 @njit(nogil=True, cache=True)
 def box_intersects_bounds(row, col, size, min_row, min_col, max_row, max_col):
     """
@@ -814,6 +818,7 @@ def box_intersects_bounds(row, col, size, min_row, min_col, max_row, max_col):
     # Box doesn't intersect if it's completely outside the bounds
     return not (box_max_row <= min_row or row >= max_row or 
                 box_max_col <= min_col or col >= max_col)
+
 
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d0_optimized(array, sizes, offsets, use_min_count=False):
@@ -944,6 +949,7 @@ def numba_d0_optimized(array, sizes, offsets, use_min_count=False):
     
     return results
 
+
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d1_optimized(array, sizes, offsets):
     """
@@ -1055,6 +1061,7 @@ def numba_d1_optimized(array, sizes, offsets):
     
     return results
 
+
 @njit(nogil=True, cache=True)
 def get_sparse_coordinates(array):
     """
@@ -1100,6 +1107,7 @@ def get_sparse_coordinates(array):
                 coords.append((i, j))
     
     return coords
+
 
 @njit(nogil=True, cache=True)
 def count_sparse_boxes(coords, size, x_off, y_off, H, W):
@@ -1176,6 +1184,7 @@ def count_sparse_boxes(coords, size, x_off, y_off, H, W):
                 box_grid[grid_x, grid_y] = True
     
     return np.sum(box_grid)
+
 
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d0_sparse(array, sizes, offsets, sparsity_threshold=0.01, use_min_count=False):
@@ -1307,8 +1316,9 @@ def numba_d0_sparse(array, sizes, offsets, sparsity_threshold=0.01, use_min_coun
     
     return results
 
+
 def boxcount(array, mode='D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1, 
-             use_optimization=True, sparse_threshold=0.01, use_min_count=False, seed=None):
+             use_optimization=True, sparse_threshold=0.01, use_min_count=False, seed=None, use_integral_image=False):
     """
     Perform box counting analysis with automatic optimization level selection.
     
@@ -1347,7 +1357,9 @@ def boxcount(array, mode='D0', num_sizes=10, min_size=None, max_size=None, num_o
     seed : int, optional
         Random seed for reproducible grid offset generation. If None, uses
         current random state.
-        
+    use_integral_image : bool, default False
+        Whether to use integral image optimization. If True, uses integral_image_d0
+        instead of numba_d0_optimized.
     Returns
     -------
     tuple
@@ -1407,7 +1419,18 @@ def boxcount(array, mode='D0', num_sizes=10, min_size=None, max_size=None, num_o
         if mode == 'D0' and sparsity <= sparse_threshold:
             counts = numba_d0_sparse(array, sizes_arr, offsets, sparse_threshold, use_min_count)
         elif mode == 'D0':
-            counts = numba_d0_optimized(array, sizes_arr, offsets, use_min_count)
+            if use_integral_image:
+                start_time = time.perf_counter()
+                sat = build_sat(array)
+                end_time = time.perf_counter()
+                print(f"Time taken to build summed area table: {end_time - start_time} seconds")
+
+                start_time = time.perf_counter()
+                counts = counts_from_sat(sat, sizes_arr, offsets, use_min_count)
+                end_time = time.perf_counter()
+                print(f"Time taken to compute box counts: {end_time - start_time} seconds")
+            else:
+                counts = numba_d0_optimized(array, sizes_arr, offsets, use_min_count)
         elif mode == 'D1':
             counts = numba_d1_optimized(array, sizes_arr, offsets)
         else:
@@ -1737,9 +1760,6 @@ def compute_dimension(sizes, measures, mode='D0', use_weighted_fit=True, use_boo
     return valid_sizes, valid_measures, d_value, fit, r2, ci_low, ci_high
 
 
-import numpy as np
-import numpy as np
-
 def bootstrap_residual(
         sizes,
         measures,
@@ -1927,7 +1947,6 @@ def bootstrap_residual(
     return d_hat, ci_low, ci_high
 
 
-
 def bootstrap_dimension(sizes, measures, mode='D0', n_bootstrap=1000, alpha=0.05):
     """
     Compute fractal dimension confidence intervals using standard bootstrap resampling.
@@ -2033,8 +2052,7 @@ def bootstrap_dimension(sizes, measures, mode='D0', n_bootstrap=1000, alpha=0.05
     d_upper = np.percentile(d_values, 100 * (1 - alpha / 2))
 
     return d_median, d_lower, d_upper
-
-    
+ 
 
 def dynamic_boxcount(array, 
                      mode='D0', 
@@ -2917,3 +2935,133 @@ def plot_dynamic_boxcount_results(dynamic_result, figsize=(15, 10)):
         if not threshold_met:
             print(f"WARNING: Fallback mode: No ranges met R² threshold, selected best available")
 
+
+def integral_image_d0(mask, sizes, offsets, use_min_count=False):
+    """
+    2‑D capacity‑dimension (D0) box counts using a summed‑area table.
+
+    Parameters
+    ----------
+    mask : (H, W) array_like
+        Binary image (non‑zeros are foreground).  Will be cast to uint8.
+    sizes : (S,) 1‑D int array
+        Box sizes in pixels.
+    offsets : (S, M, 2) int array
+        For each size `sizes[i]`, offsets[i] is an (M, 2) array of (x_off, y_off).
+        Values may be larger than the box size; they are reduced modulo `size`.
+    use_min_count : bool, optional
+        If True, take the minimum count over the M offsets; otherwise take the mean.
+
+    Returns
+    -------
+    counts : (S,) float64
+        Box count for each size.
+    """
+    # --- build summed‑area table with 1‑pixel zero border
+    mask = mask.astype(np.uint8, copy=False)
+    H, W = mask.shape
+    sat = np.zeros((H + 1, W + 1), dtype=np.uint64)
+    sat[1:, 1:] = mask
+    
+    start_time = time.perf_counter()
+    
+    sat = sat.cumsum(0).cumsum(1)           # O(N²) but runs in C
+
+    end_time = time.perf_counter()
+
+    print(f"Time taken to build summed area table: {end_time - start_time} seconds")
+
+    out = np.empty(len(sizes), dtype=np.float64)
+
+    start_time = time.perf_counter()
+
+    for i, s in enumerate(sizes):
+        m_offsets = offsets[i]
+        counts = np.empty(len(m_offsets), dtype=np.int64)
+
+        for j, (x_raw, y_raw) in enumerate(m_offsets):
+            # normalise so 0 <= offset < s
+            x_off = int(x_raw) % s
+            y_off = int(y_raw) % s
+
+            # four‑corner inclusion–exclusion on a stride‑s grid
+            br = sat[x_off + s : H + 1 : s, y_off + s : W + 1 : s]
+            bl = sat[x_off + s : H + 1 : s, y_off       : W + 1 - s : s]
+            tr = sat[x_off       : H + 1 - s : s, y_off + s : W + 1 : s]
+            tl = sat[x_off       : H + 1 - s : s, y_off       : W + 1 - s : s]
+
+            counts[j] = (br + tl - tr - bl > 0).sum()
+
+        out[i] = counts.min() if use_min_count else counts.mean()
+
+    end_time = time.perf_counter()
+
+    print(f"Time taken to compute box counts: {end_time - start_time} seconds")
+
+    return out
+
+
+def build_sat(mask: np.ndarray) -> np.ndarray:
+    """Summed‑area table with 1‑pixel zero border (NumPy only)."""
+    H, W = mask.shape
+    sat = np.zeros((H + 1, W + 1), dtype=np.uint32)
+    sat[1:, 1:] = mask.astype(np.uint8)
+    # two in‑place passes, still C‑speed
+    sat.cumsum(axis=0, out=sat)
+    sat.cumsum(axis=1, out=sat)
+    return sat
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def counts_from_sat(sat, sizes, offsets, use_min):
+    """
+    Parallel box counts from a summed‑area table (SAT).
+
+    Parameters
+    ----------
+    sat      : (H+1, W+1) uint32  –  summed‑area table
+    sizes    : (S,)      int32    –  box sizes
+    offsets  : (S, M, 2) int32    –  (x_off, y_off) pairs for each size
+    use_min  : bool                 minimise vs. average across offsets
+    """
+    S = sizes.shape[0]
+    out = np.empty(S, dtype=np.float64)
+    H = sat.shape[0] - 1
+    W = sat.shape[1] - 1
+
+    for i in prange(S):                    # ← parallel over box sizes
+        s     = sizes[i]
+        offs  = offsets[i]
+        m     = offs.shape[0]
+
+        best  = 1e18          # big number for min‑reduction
+        acc   = 0.0           # running sum for mean‑reduction
+
+        for j in prange(m):
+            # normalise offsets so 0 ≤ x_off,y_off < s
+            x_off = int(offs[j, 0]) % s
+            y_off = int(offs[j, 1]) % s
+
+            br = sat[x_off + s : H + 1 : s, y_off + s : W + 1 : s]
+            bl = sat[x_off + s : H + 1 : s, y_off       : W + 1 - s : s]
+            tr = sat[x_off       : H + 1 - s : s, y_off + s : W + 1 : s]
+            tl = sat[x_off       : H + 1 - s : s, y_off       : W + 1 - s : s]
+
+            # Scratch array the same shape as br
+            buf = np.empty(br.shape, dtype=np.uint32)
+            buf[:] = br         # copy br
+            buf += tl           # buf = br + tl
+            buf -= tr           # buf -= tr
+            buf -= bl           # buf -= bl
+
+            cnt = (buf > 0).sum()   # occupancy for this offset
+
+            if use_min:
+                if cnt < best:
+                    best = cnt
+            else:
+                acc += cnt
+
+        out[i] = best if use_min else acc / m
+
+    return out

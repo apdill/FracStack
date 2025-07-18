@@ -10,6 +10,13 @@ from .boxcount import (
     numba_d1_optimized,
     generate_random_offsets,
 )
+from .boxcount_3d import (
+    boxcount_3d,
+    measure_dimension_3d,
+    numba_d0_3d,
+    numba_d1_3d,
+    generate_random_offsets_3d
+)
 from .image_processing import (
     process_image_to_array,
     pad_image_for_boxcounting,
@@ -48,6 +55,7 @@ __all__ = [
     'compute_dimension',
     'dynamic_boxcount',
     'numba_d0',
+    'numba_d1',
     'numba_d0_sparse',
     'numba_d0_optimized',
     'numba_d1_optimized',
@@ -58,6 +66,13 @@ __all__ = [
     'portfolio_plot',
     'plot_pairwise_slopes',
     'get_sizes',
+
+    # 3D functionality
+    'boxcount_3d',
+    'measure_dimension_3d',
+    'numba_d0_3d',
+    'numba_d1_3d',
+    'generate_random_offsets_3d',
 
     # Image processing
     'process_image_to_array',

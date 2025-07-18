@@ -17,7 +17,8 @@ def measure_dimension(input_array,
                       max_size=506, 
                       num_offsets=50, 
                       pad_factor=1.5, 
-                      use_optimization=True, 
+                      use_optimization=True,
+                      use_integral_image=False,
                       sparse_threshold=0.01, 
                       use_min_count=False, 
                       seed=None, 
@@ -62,6 +63,9 @@ def measure_dimension(input_array,
     use_optimization : bool, default True
         Whether to use optimized box counting algorithms. Automatically
         selects between sparse, bounding box, and basic optimizations.
+    use_integral_image : bool, default False
+        Whether to use integral image optimization. If True, uses integral_image_d0
+        instead of numba_d0_optimized.
     sparse_threshold : float, default 0.01
         Sparsity threshold for sparse optimization. Arrays with sparsity
         (non-zero fraction) below this use coordinate-based processing.
@@ -158,8 +162,25 @@ def measure_dimension(input_array,
     else:
         padded_array = pad_image_for_boxcounting(input_array, max_size, pad_factor=pad_factor)
         
-    sizes, counts = boxcount(padded_array, mode=mode, min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets, use_optimization=use_optimization, sparse_threshold=sparse_threshold, use_min_count=use_min_count, seed=seed)
-    valid_sizes, valid_counts, d_value, fit, r2, ci_low, ci_high = compute_dimension(sizes, counts, mode=mode, use_weighted_fit=use_weighted_fit, use_bootstrap_ci=use_bootstrap_ci, bootstrap_method=bootstrap_method, n_bootstrap=n_bootstrap, random_seed=bootstrap_seed)
+    sizes, counts = boxcount(padded_array, 
+                             mode=mode, 
+                             min_size=min_size, 
+                             max_size=max_size, 
+                             num_sizes=num_sizes, 
+                             num_offsets=num_offsets, 
+                             use_optimization=use_optimization, 
+                             use_integral_image=use_integral_image, 
+                             sparse_threshold=sparse_threshold, 
+                             use_min_count=use_min_count, 
+                             seed=seed)
+    
+    valid_sizes, valid_counts, d_value, fit, r2, ci_low, ci_high = compute_dimension(sizes, counts, 
+                                                                                     mode=mode, 
+                                                                                     use_weighted_fit=use_weighted_fit, 
+                                                                                     use_bootstrap_ci=use_bootstrap_ci, 
+                                                                                     bootstrap_method=bootstrap_method, 
+                                                                                     n_bootstrap=n_bootstrap, 
+                                                                                     random_seed=bootstrap_seed)
     
     
     return {'D': d_value, 'valid_sizes': valid_sizes, 'valid_counts': valid_counts, 'fit': fit, 'R2': r2, 'ci_low': ci_low, 'ci_high': ci_high}
