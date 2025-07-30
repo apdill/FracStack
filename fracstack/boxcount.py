@@ -1307,8 +1307,16 @@ def numba_d0_sparse(array, sizes, offsets, sparsity_threshold=0.01, use_min_coun
     
     return results
 
-def boxcount(array, mode='D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1, 
-             use_optimization=True, sparse_threshold=0.01, use_min_count=False, seed=None):
+def boxcount(array, 
+             mode='D0', 
+             num_sizes=50, 
+             min_size=None, 
+             max_size=None, 
+             num_offsets=50, 
+             use_optimization=True, 
+             sparse_threshold=0.01, 
+             use_min_count=True, 
+             seed=42):
     """
     Perform box counting analysis with automatic optimization level selection.
     
@@ -1483,7 +1491,15 @@ def get_sizes(num_sizes, minsize, maxsize):
     return sizes
 
 
-def compute_dimension(sizes, measures, mode='D0', use_weighted_fit=True, use_bootstrap_ci=True, bootstrap_method='residual', n_bootstrap=1000, alpha=0.05, random_seed=None):
+def compute_dimension(sizes, 
+                      measures, 
+                      mode='D0', 
+                      use_weighted_fit=False, 
+                      use_bootstrap_ci=True, 
+                      bootstrap_method='residual',
+                      n_bootstrap=1000, 
+                      alpha=0.05, 
+                      random_seed=None):
     """
     Compute fractal dimension from box counting results using robust statistical methods.
     
