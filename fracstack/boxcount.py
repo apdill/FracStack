@@ -1522,7 +1522,15 @@ def get_sizes(num_sizes, minsize, maxsize):
     return sizes
 
 
-def compute_dimension(sizes, measures, mode='D0', use_weighted_fit=True, use_bootstrap_ci=True, bootstrap_method='residual', n_bootstrap=1000, alpha=0.05, random_seed=None):
+def compute_dimension(sizes, 
+                      measures, 
+                      mode='D0', 
+                      use_weighted_fit=False, 
+                      use_bootstrap_ci=True,
+                      bootstrap_method='residual', 
+                      n_bootstrap=1000, 
+                      alpha=0.05, 
+                      random_seed=None):
     """
     Compute fractal dimension from box counting results using robust statistical methods.
     
