@@ -1553,7 +1553,8 @@ def compute_dimension(sizes, measures, mode='D0', use_weighted_fit=True, use_boo
         Bootstrap method to use:
         - 'residual': Residual bootstrap (recommended) - resamples residuals while keeping
           x-values fixed, preserving the structure of the regression
-        - 'offset': Not yet implemented - would resample offset positions
+        - 'pairs': Pairs bootstrap - resamples pairs of data points while keeping
+          x-values fixed, preserving the structure of the regression
     n_bootstrap : int, default 1000
         Number of bootstrap resamples for confidence interval estimation
     alpha : float, default 0.05
@@ -1609,7 +1610,7 @@ def compute_dimension(sizes, measures, mode='D0', use_weighted_fit=True, use_boo
     See Also
     --------
     bootstrap_residual : Residual bootstrap implementation
-    bootstrap_dimension : Standard bootstrap for dimension estimation
+    bootstrap_pairs : Standard bootstrap for dimension estimation
     boxcount : Function that generates the input sizes and measures
     """
     
@@ -1738,9 +1739,13 @@ def compute_dimension(sizes, measures, mode='D0', use_weighted_fit=True, use_boo
                 use_weighted_fit=use_weighted_fit, random_seed=random_seed
             )
             
-        elif use_bootstrap_ci and bootstrap_method == 'offset':
-            # Offset bootstrap will be implemented later
-            raise NotImplementedError("Offset bootstrap not yet implemented. Use bootstrap_method='residual'")
+        elif use_bootstrap_ci and bootstrap_method == 'pairs':
+            # Pairs bootstrap
+            _, ci_low, ci_high = bootstrap_pairs(
+                valid_sizes, valid_measures, mode=mode, 
+                n_bootstrap=n_bootstrap, alpha=alpha, 
+                use_weighted_fit=use_weighted_fit, random_seed=random_seed
+            )
             
         else:
             # Traditional t-based confidence intervals
@@ -1865,7 +1870,7 @@ def bootstrap_residual(
     
     See Also
     --------
-    bootstrap_dimension : Standard bootstrap resampling data points
+    bootstrap_pairs : Standard bootstrap resampling data points
     compute_dimension : Main function that calls this for bootstrap CI
     """
     rng = np.random.default_rng(random_seed)
@@ -1963,7 +1968,15 @@ def bootstrap_residual(
     return d_hat, ci_low, ci_high
 
 
-def bootstrap_dimension(sizes, measures, mode='D0', n_bootstrap=1000, alpha=0.05):
+def bootstrap_pairs(sizes,
+                    measures,
+                    mode='D0',
+                    n_bootstrap=1000,
+                    alpha=0.05,
+                    use_weighted_fit=True,
+                    random_seed=None,
+                    studentized=False,
+                ):
     """
     Compute fractal dimension confidence intervals using standard bootstrap resampling.
     
@@ -2029,7 +2042,7 @@ def bootstrap_dimension(sizes, measures, mode='D0', n_bootstrap=1000, alpha=0.05
     --------
     >>> sizes = [1, 2, 4, 8, 16, 32]
     >>> counts = [1000, 250, 63, 16, 4, 1]
-    >>> d_med, d_low, d_high = bootstrap_dimension(sizes, counts, mode='D0', n_bootstrap=1000)
+    >>> d_med, d_low, d_high = bootstrap_pairs(sizes, counts, mode='D0', n_bootstrap=1000)
     >>> print(f"D0 = {d_med:.3f} [{d_low:.3f}, {d_high:.3f}]")
     
     See Also
@@ -2037,38 +2050,93 @@ def bootstrap_dimension(sizes, measures, mode='D0', n_bootstrap=1000, alpha=0.05
     bootstrap_residual : Residual bootstrap method (generally preferred)
     compute_dimension : Main function with multiple bootstrap options
     """
-    sizes = np.array(sizes)
-    measures = np.array(measures)
-    n = len(sizes)
+    rng = np.random.default_rng(random_seed)
+    sizes = np.asarray(sizes, dtype=float)
+    measures = np.asarray(measures, dtype=float)
+    n = sizes.size
 
-    # Store dimension from each bootstrap iteration
-    d_values = []
+    # helpers to match your residual function’s conventions
+    def prepare_xyw(sz, ms, mode, use_w):
+        if mode == 'D0':
+            x = np.log10(sz)
+            y = np.log10(ms)
+            w = ms if use_w else np.ones_like(x)            # var(log N) ~ 1/N
+        elif mode == 'D1':
+            x = np.log2(sz)
+            y = ms
+            w = (1.0 / (ms + 1e-10)) if use_w else np.ones_like(x)
+        else:
+            raise ValueError("mode must be 'D0' or 'D1'")
+        return x, y, w
+
+    def wls_slope(x, y, w=None, ridge=1e-12):
+        X = np.column_stack((x, np.ones_like(x)))
+        if w is None:
+            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+            yhat = X @ beta
+            # OLS cov
+            rss = np.sum((y - yhat)**2)
+            sigma2 = rss / (len(y) - 2)
+            cov = np.linalg.inv(X.T @ X) * sigma2
+            return beta[0], beta, yhat, cov
+        # WLS via sqrt(w) scaling
+        sw = np.sqrt(np.clip(w, 0.0, np.inf))
+        Xw = X * sw[:, None]
+        yw = y * sw
+        XtX = Xw.T @ Xw
+        XtX.flat[::XtX.shape[0]+1] += ridge
+        beta = np.linalg.solve(XtX, Xw.T @ yw)
+        yhat = X @ beta
+        # Unbiased sigma^2 under precision weights
+        sigma2 = np.sum(w * (y - yhat)**2) / (len(y) - 2)
+        cov = np.linalg.inv(X.T @ (w[:, None] * X)) * sigma2
+        return beta[0], beta, yhat, cov
+
+    # Point estimate on original data
+    x0, y0, w0 = prepare_xyw(sizes, measures, mode, use_weighted_fit)
+    slope_hat, beta_hat, yhat, cov_hat = wls_slope(x0, y0, (w0 if use_weighted_fit else None))
+    d_hat = -slope_hat
+    se_hat = float(np.sqrt(cov_hat[0, 0]))
+
+    d_samples = []
+    t_stats = [] if studentized else None
 
     for _ in range(n_bootstrap):
-        # Randomly resample data points with replacement
-        resample_idx = np.random.randint(0, n, size=n)
-        resampled_sizes = sizes[resample_idx]
-        resampled_measures = measures[resample_idx]
+        idx = rng.integers(0, n, size=n)  # resample pairs
+        s_b = sizes[idx]
+        m_b = measures[idx]
+        x_b, y_b, w_b = prepare_xyw(s_b, m_b, mode, use_weighted_fit)
 
-        # Fit slope based on the chosen mode using OLS
-        if mode == 'D0':
-            slope, _ = np.polyfit(np.log10(resampled_sizes), np.log10(resampled_measures), 1)
-        elif mode == 'D1':
-            slope, _ = np.polyfit(np.log2(resampled_sizes), resampled_measures, 1)
-        else:
-            raise ValueError("Invalid mode. Use 'D0' or 'D1'.")
+        try:
+            slope_b, _, _, cov_b = wls_slope(x_b, y_b, (w_b if use_weighted_fit else None))
+        except np.linalg.LinAlgError:
+            # skip rare singular draws
+            continue
 
-        # Dimension is negative slope
-        d_values.append(-slope)
+        d_b = -slope_b
+        d_samples.append(d_b)
 
-    # Compute statistics from bootstrap distribution
-    d_values = np.array(d_values)
-    d_median = np.median(d_values)
-    d_lower = np.percentile(d_values, 100 * (alpha / 2))
-    d_upper = np.percentile(d_values, 100 * (1 - alpha / 2))
+        if studentized:
+            se_b = float(np.sqrt(cov_b[0, 0]))
+            # studentized pivot for slope, then map to D with a sign:
+            # t* = (slope_b - slope_hat)/se_b, same as -(d_b - d_hat)/se_b
+            t_stats.append((slope_b - slope_hat) / max(se_b, 1e-20))
 
-    return d_median, d_lower, d_upper
- 
+    d_samples = np.array(d_samples)
+
+    if d_samples.size == 0:
+        return d_hat, np.nan, np.nan
+
+    if studentized:
+        q_lo, q_hi = np.quantile(np.array(t_stats), [1 - alpha/2, alpha/2])
+        slope_low  = slope_hat - q_lo  * se_hat
+        slope_high = slope_hat - q_hi * se_hat
+        ci_low, ci_high = -slope_high, -slope_low
+    else:
+        # percentile CI on D directly
+        ci_low, ci_high = np.quantile(d_samples, [alpha/2, 1 - alpha/2])
+
+    return float(d_hat), float(ci_low), float(ci_high)
 
 def dynamic_boxcount(array, 
                      mode='D0', 
