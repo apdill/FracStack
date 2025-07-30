@@ -1317,8 +1317,19 @@ def numba_d0_sparse(array, sizes, offsets, sparsity_threshold=0.01, use_min_coun
     return results
 
 
-def boxcount(array, mode='D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1, 
-             use_optimization=True, sparse_threshold=0.01, use_min_count=False, seed=None, use_integral_image=False):
+def boxcount(array, 
+             mode='D0', 
+             num_sizes=50, 
+             min_size=None, 
+             max_size=None, 
+             num_offsets=50, 
+             use_optimization=True, 
+             sparse_threshold=0.01, 
+             use_min_count=True, 
+             seed=42,   
+             use_integral_image=True,
+             custom_sizes=None,
+             ):
     """
     Perform box counting analysis with automatic optimization level selection.
     
@@ -1403,7 +1414,12 @@ def boxcount(array, mode='D0', num_sizes=10, min_size=None, max_size=None, num_o
     array = np.ascontiguousarray(array.astype(np.float32))
     min_size = 1 if min_size is None else min_size
     max_size = max(min_size + 1, min(array.shape)//5) if max_size is None else max_size
-    sizes = get_sizes(num_sizes, min_size, max_size)
+    
+    if custom_sizes is None:
+        sizes = get_sizes(num_sizes, min_size, max_size)
+    else:
+        sizes = custom_sizes
+        
     sizes_arr = np.array(sizes)
     
     # Pre-generate random offsets to avoid thread safety issues in numba parallel functions

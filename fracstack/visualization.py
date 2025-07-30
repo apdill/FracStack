@@ -215,13 +215,13 @@ def visualize_box_overlay(array, size, mode='D0', figsize=(10, 10), alpha=0.1, u
         return count
 
 
-def plot_scaling_results(f_name, 
-                         input_array, 
-                         sizes, 
-                         measures, 
-                         d_value, 
-                         fit, 
-                         r2, 
+def plot_scaling_results(f_name = 'fractal image', 
+                         input_array = None, 
+                         sizes = None, 
+                         measures = None, 
+                         d_value = None, 
+                         fit = None, 
+                         r2 = None, 
                          mode = 'D0', 
                          show_image = True, 
                          save=False, 
@@ -253,7 +253,7 @@ def plot_scaling_results(f_name,
             ax2.set_title(r'Shannon Entropy vs. $Log_{2}(Box Size)$', fontsize = 22)
             ax2.set_ylabel(r'$H(L)$', fontsize = 22)
 
-        bc_info_text = fr"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(sizes.min())} \nLargest box size (L) = {np.round(sizes.max())} \n$R^2$ = {np.round(r2, decimals=2)}"
+        bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(sizes.min())} \nLargest box size (L) = {np.round(sizes.max())} \n$R^2$ = {np.round(r2, decimals=4)}"
         
         ax2.text(0.55, 0.95, bc_info_text, transform=ax2.transAxes, fontsize=22,
                 verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.1))
@@ -283,7 +283,7 @@ def plot_scaling_results(f_name,
             plt.plot(np.log10(sizes), fit[0] * -np.log2(1/sizes) + fit[1], color='red')
 
         plt.title(f"{os.path.splitext(f_name)[0]}", fontsize = 22)
-        bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(sizes.min())} \nLargest box size (L) = {np.round(sizes.max())} \n$R^2$ = {np.round(r2, decimals=2)}"
+        bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(sizes.min())} \nLargest box size (L) = {np.round(sizes.max())} \n$R^2$ = {np.round(r2, decimals=4)}"
         plt.text(0.5, 0.95, bc_info_text, fontsize=22, transform=plt.gca().transAxes, verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.1))
         plt.grid(True)
         plt.tick_params(axis='both', which='major', labelsize=18)

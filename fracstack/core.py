@@ -20,7 +20,7 @@ def measure_dimension(input_array,
                       use_optimization=True,
                       use_integral_image=False,
                       sparse_threshold=0.01, 
-                      use_min_count=False, 
+                      use_min_count=True, 
                       seed=None, 
                       use_weighted_fit=True,
                       use_bootstrap_ci=False,
@@ -205,8 +205,8 @@ def portfolio_plot(input_array = None,
                 use_dynamic=False,
                 dynamic_params=None,
                 compute_dimensions='both',
-                use_min_count=False,
-                use_weighted_fit=True,
+                use_min_count=True,
+                use_weighted_fit=False,
                 seed=None,
                 use_bootstrap_ci=False,
                 bootstrap_method='residual',
@@ -271,7 +271,7 @@ def portfolio_plot(input_array = None,
         - 'D0': Only capacity dimension
         - 'D1': Only information dimension  
         - 'both': Both dimensions (default)
-    use_min_count : bool, default False
+    use_min_count : bool, default True
         For D0 mode: whether to use minimum count across offsets (True) or
         average count across offsets (False, recommended)
     use_weighted_fit : bool, default True
@@ -432,17 +432,22 @@ def portfolio_plot(input_array = None,
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
 
-    # Handle custom sizes - disable dynamic mode if custom sizes provided
+
     if custom_sizes is not None:
+        
         custom_sizes = np.array(custom_sizes, dtype=int)
-        use_dynamic = False  # Force standard mode with custom sizes
-        # Set max_size to largest custom size for padding
+        
+        if use_dynamic:
+            print("Warning: use_dynamic is set to True, but custom sizes are provided. Disabling dynamic mode.")
+            use_dynamic = False  
+            
         max_size = np.max(custom_sizes)
         print(f"Using custom sizes: {len(custom_sizes)} sizes from {custom_sizes.min()} to {custom_sizes.max()}")
+        
     else:
         # Set default max_size if None before padding
         if max_size is None:
-            max_size = min(input_array.shape) // 4
+            max_size = int(min(input_array.shape) // 5)
     
     padded_input_array = pad_image_for_boxcounting(input_array, max_size, pad_factor=pad_factor)
 
@@ -489,9 +494,16 @@ def portfolio_plot(input_array = None,
         
         # Dynamic D0 analysis (if requested)
         if compute_dimensions in ['D0', 'both']:
-            dynamic_result_d0 = dynamic_boxcount(padded_input_array, mode='D0', use_min_count=use_min_count, seed=seed, 
-                                                use_bootstrap_ci=use_bootstrap_ci, bootstrap_method=bootstrap_method, 
-                                                n_bootstrap=n_bootstrap, bootstrap_seed=bootstrap_seed, **dynamic_params)
+            dynamic_result_d0 = dynamic_boxcount(padded_input_array, 
+                                                 mode='D0', 
+                                                 use_min_count=use_min_count, 
+                                                 seed=seed, 
+                                                 use_bootstrap_ci=use_bootstrap_ci, 
+                                                 bootstrap_method=bootstrap_method, 
+                                                 n_bootstrap=n_bootstrap, 
+                                                 bootstrap_seed=bootstrap_seed, 
+                                                 **dynamic_params
+                                                 )
             
             ci_type = dynamic_result_d0['ci_type']
             ci_low = dynamic_result_d0['ci_low']
@@ -515,9 +527,14 @@ def portfolio_plot(input_array = None,
         
         # Dynamic D1 analysis (if requested)
         if compute_dimensions in ['D1', 'both']:
-            dynamic_result_d1 = dynamic_boxcount(padded_input_array, mode='D1', seed=seed, 
-                                                use_bootstrap_ci=use_bootstrap_ci, bootstrap_method=bootstrap_method, 
-                                                n_bootstrap=n_bootstrap, bootstrap_seed=bootstrap_seed, **dynamic_params)
+            dynamic_result_d1 = dynamic_boxcount(padded_input_array, 
+                                                 mode='D1', 
+                                                 seed=seed, 
+                                                 use_bootstrap_ci=use_bootstrap_ci, 
+                                                 bootstrap_method=bootstrap_method, 
+                                                 n_bootstrap=n_bootstrap, 
+                                                 bootstrap_seed=bootstrap_seed, 
+                                                 **dynamic_params)
             
             ci_type = dynamic_result_d1['ci_type']
             ci_low = dynamic_result_d1['ci_low']
@@ -540,63 +557,111 @@ def portfolio_plot(input_array = None,
                 fit_d1 = np.polyfit(np.log2(valid_sizes_d1), valid_entropies, 1)
         
     else:
-        # Standard box counting approach
+        # Standard box counting approach with custom sizes
         if custom_sizes is not None:
-            # Direct box counting with custom sizes using numba functions
-            from .boxcount import generate_random_offsets, numba_d0_optimized, numba_d1_optimized, numba_d0, numba_d1, numba_d0_sparse
-            
-            # Prepare array for numba functions
-            array_numba = np.ascontiguousarray(padded_input_array.astype(np.float32))
-            
-            # Pre-generate random offsets for custom sizes
-            offsets = generate_random_offsets(custom_sizes, num_offsets, seed=seed)
             
             if compute_dimensions in ['D0', 'both']:
-                if use_optimization:
-                    # Calculate sparsity to choose optimization strategy
-                    total_pixels = array_numba.size
-                    non_zero_pixels = np.count_nonzero(array_numba)
-                    sparsity = non_zero_pixels / total_pixels
-                    
-                    # Use sparse optimization for very sparse arrays (D0 only)
-                    if sparsity <= sparse_threshold:
-                        counts = numba_d0_sparse(array_numba, custom_sizes, offsets, sparse_threshold, use_min_count)
-                    else:
-                        counts = numba_d0_optimized(array_numba, custom_sizes, offsets, use_min_count)
-                else:
-                    counts = numba_d0(array_numba, custom_sizes, offsets, use_min_count)
+                sizes, counts = boxcount(padded_input_array, 
+                                         mode='D0', 
+                                         min_size=min_size, 
+                                         max_size=max_size, 
+                                         num_sizes=num_sizes, 
+                                         num_offsets=num_offsets, 
+                                         use_optimization=use_optimization, 
+                                         sparse_threshold=sparse_threshold, 
+                                         use_min_count=use_min_count, 
+                                         seed=seed,
+                                         custom_sizes=custom_sizes
+                                         )
                 
-                sizes = custom_sizes
-                valid_sizes_d0, valid_counts, d_value_d0, fit_d0, r2_d0, ci_low_d0, ci_high_d0 = compute_dimension(sizes, counts, mode='D0', use_bootstrap_ci=use_bootstrap_ci, bootstrap_method=bootstrap_method, n_bootstrap=n_bootstrap, random_seed=bootstrap_seed)
+                valid_sizes_d0, valid_counts, d_value_d0, fit_d0, r2_d0, ci_low_d0, ci_high_d0 = compute_dimension(sizes, 
+                                                                                                                   counts, 
+                                                                                                                   mode='D0', 
+                                                                                                                   use_weighted_fit=use_weighted_fit,
+                                                                                                                   use_bootstrap_ci=use_bootstrap_ci, 
+                                                                                                                   bootstrap_method=bootstrap_method, 
+                                                                                                                   n_bootstrap=n_bootstrap, 
+                                                                                                                   random_seed=bootstrap_seed)
                 ci_type = bootstrap_method
                 ci_low = ci_low_d0
                 ci_high = ci_high_d0
                 
             if compute_dimensions in ['D1', 'both']:
-                if use_optimization:
-                    counts = numba_d1_optimized(array_numba, custom_sizes, offsets)
-                else:
-                    counts = numba_d1(array_numba, custom_sizes, offsets)
+                sizes, counts = boxcount(padded_input_array, 
+                                         mode='D1', 
+                                         min_size=min_size, 
+                                         max_size=max_size, 
+                                         num_sizes=num_sizes, 
+                                         num_offsets=num_offsets, 
+                                         use_optimization=use_optimization, 
+                                         sparse_threshold=sparse_threshold, 
+                                         use_min_count=use_min_count, 
+                                         seed=seed,
+                                         custom_sizes=custom_sizes
+                                         )
                 
-                sizes = custom_sizes
-                valid_sizes_d1, valid_entropies, d_value_d1, fit_d1, r2_d1, ci_low_d1, ci_high_d1 = compute_dimension(sizes, counts, mode='D1', use_bootstrap_ci=use_bootstrap_ci, bootstrap_method=bootstrap_method, n_bootstrap=n_bootstrap, random_seed=bootstrap_seed)
+                valid_sizes_d1, valid_entropies, d_value_d1, fit_d1, r2_d1, ci_low_d1, ci_high_d1 = compute_dimension(sizes, 
+                                                                                                                      counts, 
+                                                                                                                      mode='D1', 
+                                                                                                                      use_weighted_fit=use_weighted_fit,
+                                                                                                                      use_bootstrap_ci=use_bootstrap_ci, 
+                                                                                                                      bootstrap_method=bootstrap_method, 
+                                                                                                                      n_bootstrap=n_bootstrap, 
+                                                                                                                      random_seed=bootstrap_seed)
                 ci_type = bootstrap_method
-                # Only update ci_low/ci_high if D1 is the only dimension being computed
-                if compute_dimensions == 'D1':
-                    ci_low = ci_low_d1
-                    ci_high = ci_high_d1
+                ci_low = ci_low_d1
+                ci_high = ci_high_d1
+
         else:
             # Standard box counting approach with automatic size generation
             if compute_dimensions in ['D0', 'both']:
-                sizes, counts = boxcount(padded_input_array, mode='D0', min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets, use_optimization=use_optimization, sparse_threshold=sparse_threshold, use_min_count=use_min_count, seed=seed)
-                valid_sizes_d0, valid_counts, d_value_d0, fit_d0, r2_d0, ci_low_d0, ci_high_d0 = compute_dimension(sizes, counts, mode='D0', use_bootstrap_ci=use_bootstrap_ci, bootstrap_method=bootstrap_method, n_bootstrap=n_bootstrap, random_seed=bootstrap_seed)
+                sizes, counts = boxcount(padded_input_array, 
+                                         mode='D0', 
+                                         min_size=min_size, 
+                                         max_size=max_size, 
+                                         num_sizes=num_sizes, 
+                                         num_offsets=num_offsets, 
+                                         use_optimization=use_optimization, 
+                                         sparse_threshold=sparse_threshold, 
+                                         use_min_count=use_min_count, 
+                                         seed=seed
+                                         )
+                
+                valid_sizes_d0, valid_counts, d_value_d0, fit_d0, r2_d0, ci_low_d0, ci_high_d0 = compute_dimension(sizes, 
+                                                                                                                   counts, 
+                                                                                                                   mode='D0', 
+                                                                                                                   use_weighted_fit=use_weighted_fit,
+                                                                                                                   use_bootstrap_ci=use_bootstrap_ci, 
+                                                                                                                   bootstrap_method=bootstrap_method, 
+                                                                                                                   n_bootstrap=n_bootstrap, 
+                                                                                                                   random_seed=bootstrap_seed
+                                                                                                                   )
                 ci_type = bootstrap_method
                 ci_low = ci_low_d0
                 ci_high = ci_high_d0
                 
             if compute_dimensions in ['D1', 'both']:
-                sizes, counts = boxcount(padded_input_array, mode='D1', min_size=min_size, max_size=max_size, num_sizes=num_sizes, num_offsets=num_offsets, use_optimization=use_optimization, sparse_threshold=sparse_threshold, use_min_count=use_min_count, seed=seed)
-                valid_sizes_d1, valid_entropies, d_value_d1, fit_d1, r2_d1, ci_low_d1, ci_high_d1 = compute_dimension(sizes, counts, mode='D1', use_bootstrap_ci=use_bootstrap_ci, bootstrap_method=bootstrap_method, n_bootstrap=n_bootstrap, random_seed=bootstrap_seed)
+                sizes, counts = boxcount(padded_input_array, 
+                                         mode='D1', 
+                                         min_size=min_size, 
+                                         max_size=max_size, 
+                                         num_sizes=num_sizes, 
+                                         num_offsets=num_offsets, 
+                                         use_optimization=use_optimization, 
+                                         sparse_threshold=sparse_threshold, 
+                                         use_min_count=use_min_count, 
+                                         seed=seed
+                                         )
+                
+                valid_sizes_d1, valid_entropies, d_value_d1, fit_d1, r2_d1, ci_low_d1, ci_high_d1 = compute_dimension(sizes,
+                                                                                                                      counts, 
+                                                                                                                      mode='D1',
+                                                                                                                      use_weighted_fit=use_weighted_fit,
+                                                                                                                      use_bootstrap_ci=use_bootstrap_ci, 
+                                                                                                                      bootstrap_method=bootstrap_method, 
+                                                                                                                      n_bootstrap=n_bootstrap,
+                                                                                                                      random_seed=bootstrap_seed
+                                                                                                                      )
                 ci_type = bootstrap_method
                 ci_low = ci_low_d1
                 ci_high = ci_high_d1

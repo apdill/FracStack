@@ -587,6 +587,12 @@ def boxcount_3d(array, mode='D0', num_sizes=10, min_size=None, max_size=None, nu
     # Pre-generate random offsets for 3D
     offsets = generate_random_offsets_3d(sizes_arr, num_offsets, seed=seed)
     
+    
+    if array.ndim == 2 and array.shape[1] == 3:
+        print("Detected coordinate inputs, using counts_from_points method")
+        use_integral_image = False
+        use_torch = False
+    
     # Memory estimation for torch SVT
     if use_torch and use_integral_image:
         # Estimate memory usage for SVT (shape will be array.shape + 1)
@@ -602,6 +608,23 @@ def boxcount_3d(array, mode='D0', num_sizes=10, min_size=None, max_size=None, nu
             force_chunked = True
     
     if mode == 'D0':
+        
+        if array.ndim == 2 and array.shape[1] == 3:
+            print("Detected coordinate inputs, using point‑cloud box counter")
+
+            # geometric progression of ε just like before
+            sizes = get_sizes(num_sizes, min_size, max_size)
+
+            rng = np.random.default_rng(seed)      # honour the seed argument
+            counts = counts_from_points(
+                        array.astype(np.float64),   # keep full precision
+                        sizes,
+                        num_offsets=num_offsets,
+                        use_min=use_min_count,
+                        rng=rng)
+
+            return sizes, counts.tolist()
+        
         if use_integral_image:
             if use_torch:
                 # Check if we should use chunked processing
@@ -777,8 +800,14 @@ def measure_dimension_3d(input_array,
     """
     
     # Ensure binary input
-    if not np.array_equal(input_array/np.max(input_array), input_array.astype(bool)):
-        input_array = input_array.astype(bool).astype(np.uint8)
+    if input_array.dtype != bool and input_array.dtype != np.uint8:
+        # Check if values are already binary (0s and 1s only) without creating large arrays
+        max_val = np.max(input_array)
+        min_val = np.min(input_array)
+        if max_val <= 1 and min_val >= 0 and np.all((input_array == 0) | (input_array == 1)):
+            input_array = input_array.astype(np.uint8)
+        else:
+            input_array = input_array.astype(bool).astype(np.uint8)
     
     if max_size is None:
         max_size = min(input_array.shape) // 5
@@ -906,3 +935,40 @@ def counts_from_svt(svt, sizes, offsets, use_min):
         out[i] = best if use_min else acc / m
 
     return out
+
+import numpy as np
+
+def counts_from_points(points, sizes, num_offsets=1, use_min=False, rng=None):
+    """
+    Parameters
+    ----------
+    points      (N,3) float64/32  – raw coordinates
+    sizes       1‑D array of ε (box edges, same unit as points)
+    num_offsets int               – random grid shifts per ε
+    use_min     bool              – True → min across offsets, False → mean
+    rng         np.random.Generator or None
+
+    Returns
+    -------
+    counts      1‑D float64       – N(ε) for every ε in `sizes`
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    # shift cloud so the min corner is at (0,0,0); keeps indices non‑negative
+    pts = points - points.min(axis=0, keepdims=True)
+
+    counts = []
+    for eps in sizes:
+        c_per_offset = []
+        for _ in range(num_offsets):
+            delta = rng.uniform(0, eps, size=(1, 3))      # random offset 0 ≤ Δ < ε
+            idx   = np.floor((pts + delta) / eps).astype(np.int64)
+
+            # unique rows – the slow but bullet‑proof way
+            uniq = np.unique(idx.view([('', idx.dtype)]*3))
+            c_per_offset.append(uniq.size)
+
+        counts.append(min(c_per_offset) if use_min else np.mean(c_per_offset))
+
+    return np.array(counts, dtype=float)
