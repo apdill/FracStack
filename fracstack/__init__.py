@@ -8,15 +8,18 @@ from .boxcount import (
     numba_d0_sparse,
     numba_d0_optimized,
     numba_d1_optimized,
+    numba_d2,
+    numba_d2_optimized,
     generate_random_offsets,
+    get_pairwise_slopes,
+    detect_scaling_plateau,
+    detect_plateau_pairwise,
+    detect_plateau_hybrid,
+    filter_by_occupancy,
+    lacunarity_boxcount,
+    correlation_dimension
 )
-from .boxcount_3d import (
-    boxcount_3d,
-    measure_dimension_3d,
-    numba_d0_3d,
-    numba_d1_3d,
-    generate_random_offsets_3d
-)
+
 from .image_processing import (
     process_image_to_array,
     pad_image_for_boxcounting,
@@ -30,6 +33,7 @@ from .image_processing import (
 from .visualization import (
     plot_scaling_results,
     plot_object_outlines,
+    plot_lacunarity_curve,
     show_largest_box_frame,
     create_boxcounting_animation,
     show_image_info,
@@ -59,7 +63,12 @@ __all__ = [
     'numba_d0_sparse',
     'numba_d0_optimized',
     'numba_d1_optimized',
+    'numba_d1',
+    'numba_d2',
+    'numba_d2_optimized',
     'generate_random_offsets',
+    'lacunarity_boxcount',
+    'correlation_dimension',
     'measure_dimension',
     'analyze_image',
     'analyze_images',
@@ -92,5 +101,14 @@ __all__ = [
     'show_image_info',
     'illustrate_boxcounting_regions',
     'visualize_box_overlay',
-    'showim'
+    'showim',
+    'plot_lacunarity_curve',
+    'plot_pairwise_slopes',
+
+    # Boxcount helper functions
+    'get_pairwise_slopes',
+    'detect_scaling_plateau',
+    'detect_plateau_pairwise',
+    'detect_plateau_hybrid',
+    'filter_by_occupancy'
 ]

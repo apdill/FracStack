@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fracstack"
+version = "0.1.1"
+authors = [
+    {name = "DillyDilly", email = "aidend@uoregon.edu"}
+]
+description = "A package for fractal analysis and box counting with visualization capabilities"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+keywords = ["fractal", "box-counting", "image-processing", "analysis"]
+dependencies = [
+    "numpy>=1.19.0",
+    "matplotlib>=3.3.0",
+    "scikit-image>=0.18.0",
+    "scipy>=1.6.0",
+    "tqdm>=4.50.0",
+    "scikit-learn>=0.24.0",
+    "pandas>=2.2.0",
+    "numba>=0.50.0",
+    "Pillow>=8.0.0",
+    "customtkinter>=5.2.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/apdill/FracStack"
+Repository = "https://github.com/apdill/FracStack.git"
+Issues = "https://github.com/apdill/FracStack/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "black>=21.0",
+    "flake8>=3.8",
+    "mypy>=0.910",
+]
+build = [
+    "pyinstaller>=6.0.0",
+    "build>=0.7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fracstack*"]
+
+[tool.setuptools.package-data]
+fracstack = ["*.txt", "*.md"]
+
+# Optional: Tool configurations
+[tool.black]
+line-length = 88
+target-version = ['py310']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true

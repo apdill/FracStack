@@ -3,6 +3,7 @@ import skimage.io as io
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 from skimage import measure
+from skimage.feature import canny
 from scipy.spatial.distance import pdist
 from scipy.spatial import ConvexHull
 import os
@@ -71,14 +72,14 @@ def invert_array(arr):
     else:
         raise ValueError("Array values exceed expected range for binary or uint8 format.")
 
-def process_image_to_array(file_path, threshold=None, invert = False):
+def process_image_to_array(file_path = None, threshold='min', invert = False, input_array = None, edge_detection = False):
     """
     Load an image file and convert it to a binary array with thresholding.
     
     This function handles the complete workflow of loading an image, converting
-    to grayscale if needed, applying thresholding to create a binary image,
-    and optionally inverting the result. It supports automatic threshold
-    selection and various threshold strategies.
+    to grayscale if needed, applying thresholding to create a binary image, 
+    optionally inverting the result, and finally applying edge detection if 
+    requested. It supports automatic threshold selection and various threshold strategies.
     
     Parameters
     ----------
@@ -93,6 +94,10 @@ def process_image_to_array(file_path, threshold=None, invert = False):
         - 'max': Use maximum pixel value as threshold
     invert : bool, default False
         Whether to invert the binary image after thresholding
+    input_array : np.ndarray, optional
+        Input array to process instead of loading from file_path
+    edge_detection : bool, default False
+        Whether to apply Canny edge detection before thresholding
         
     Returns
     -------
@@ -117,6 +122,9 @@ def process_image_to_array(file_path, threshold=None, invert = False):
     >>> 
     >>> # Use minimum value as threshold
     >>> binary_img = process_image_to_array('image.png', threshold='min')
+    >>> 
+    >>> # Apply edge detection after thresholding and inversion
+    >>> binary_img = process_image_to_array('image.png', threshold=128, invert=True, edge_detection=True)
     
     Notes
     -----
@@ -125,6 +133,7 @@ def process_image_to_array(file_path, threshold=None, invert = False):
     2. Convert to grayscale by averaging RGB channels if needed
     3. Apply threshold to create binary image (>=threshold becomes 1)
     4. Optionally invert the binary result
+    5. Optionally apply Canny edge detection to the final binary image
     
     The function automatically handles:
     - Color to grayscale conversion
@@ -138,28 +147,48 @@ def process_image_to_array(file_path, threshold=None, invert = False):
     - Maximum: Creates mostly black images (most pixels become 0)
     - Custom value: Allows precise control over binarization
     """
-    image_array = io.imread(file_path)
+    if file_path is not None:
+        image_array = io.imread(file_path)
+    elif input_array is not None:
+        image_array = input_array
+    else:
+        raise ValueError("Either file_path or input_array must be provided.")
+    
+    if file_path is not None and input_array is not None:
+        raise ValueError("Either file_path or input_array must be provided, not both.")
     
     # Convert to grayscale by averaging channels if it's not already
     if len(image_array.shape) == 3:
         image_array = image_array.mean(axis=2)
-    
-    # Binarize the image with the given threshold
+
+    # Binarize the image with the given threshold FIRST
     if threshold is None:
         threshold = image_array.mean()
     elif threshold == 'min':
-        threshold = image_array.min()
+        threshold = image_array.min() + 1
     elif threshold == 'max':
         threshold = image_array.max()
     else:  
         if threshold < image_array.min() or threshold > image_array.max():
             raise ValueError(f"Threshold {threshold} is out of the range of image values ({image_array.min()} to {image_array.max()}).")
 
-    binary_image_array = (image_array >= threshold).astype(int)
-
-    # Optionally invert the binary image
+    threshold = np.floor(threshold).astype(int)
+    binary_image_array = ((image_array >= threshold) * 255).astype(np.uint8)
+    
+    # Optionally invert the binary image SECOND
     if invert:
         binary_image_array = invert_array(binary_image_array)
+    
+    # Apply edge detection LAST (after thresholding and invert)
+    if edge_detection:
+        print("Applying Canny edge detection to processed binary image...")
+        # Normalize binary image to 0-1 range for Canny edge detection
+        normalized_binary = binary_image_array.astype(np.float64) / 255.0
+        # Apply Canny edge detection with parameters suitable for binary images
+        edges = canny(normalized_binary, sigma=1.0, low_threshold=0.1, high_threshold=0.2)
+        # Convert edges back to 0-255 range
+        binary_image_array = (edges * 255).astype(np.uint8)
+        print(f"Edge detection complete. Edge image shape: {binary_image_array.shape}, unique values: {np.unique(binary_image_array)}")
 
     return binary_image_array
 
@@ -314,7 +343,7 @@ def bounding_box_diameter(region):
 
 
 
-def find_largest_smallest_objects(binary_image, invert=False):
+def find_largest_smallest_objects(binary_image, invert=False, save_dir=None, f_name=None, show=True):
     """
     Identify and analyze the largest and smallest objects in a binary image.
     
@@ -333,25 +362,31 @@ def find_largest_smallest_objects(binary_image, invert=False):
     Returns
     -------
     tuple
-        (largest_object, smallest_object, largest_diameter, smallest_diameter, labeled_image)
+        (largest_object, smallest_object, largest_diameter, smallest_diameter, min_feature_width, min_feature_object, labeled_image)
         
         - largest_object : skimage.measure.RegionProperties or None
             Region properties of the largest object by area
         - smallest_object : skimage.measure.RegionProperties or None  
-            Region properties of the smallest object by area
+            Region properties of the smallest object by area (excluding border-touching objects)
         - largest_diameter : float or None
             True diameter of largest object (maximum pairwise distance)
         - smallest_diameter : float or None
-            True diameter of smallest object (maximum pairwise distance)
+            True diameter of smallest object (maximum pairwise distance, excluding border-touching objects)
+        - min_feature_width : float or None
+            Minimum bounding box dimension (min of width/height) across ALL objects (excluding border-touching objects)
+        - min_feature_object : skimage.measure.RegionProperties or None
+            Region properties of the object with minimum bounding box dimension (excluding border-touching objects)
         - labeled_image : np.ndarray
             Labeled image from connected component analysis
             
     Notes
     -----
     Object Detection and Filtering:
-    - Uses 8-connectivity for connected component analysis
+    - Uses 4-connectivity for connected component analysis
     - Filters out objects smaller than 2x2 pixels (bounding box)
     - Objects are sorted by area to find largest and smallest
+    - Objects touching the image border are excluded from smallest object 
+      and minimum feature width calculations to avoid incomplete measurements
     
     Diameter Calculation Algorithm:
     The function uses an optimized approach for diameter calculation:
@@ -396,11 +431,11 @@ def find_largest_smallest_objects(binary_image, invert=False):
         binary_image = invert_array(binary_image)
 
     # Label connected regions in the binary image
-    labeled_image, num_features = measure.label(binary_image, connectivity=2, return_num=True)
+    labeled_image, num_features = measure.label(binary_image, connectivity=1, return_num=True)
 
     if num_features == 0:
         print("No objects found.")
-        return None, None, None, None, labeled_image
+        return None, None, None, None, None, None, labeled_image
 
     # Get region properties for each labeled object
     regions = measure.regionprops(labeled_image)
@@ -423,6 +458,7 @@ def find_largest_smallest_objects(binary_image, invert=False):
 
         # Compute all pairwise distances and return the maximum
         diameter = pdist(coords).max()
+        
 
         # Validate the diameter against the image size
         image_height, image_width = binary_image.shape
@@ -438,23 +474,77 @@ def find_largest_smallest_objects(binary_image, invert=False):
 
     if not valid_regions:
         print("No valid objects found with a minimum size of 2x2.")
-        return None, None, None, None, labeled_image
+        return None, None, None, None, None, None, labeled_image
 
     # Find the largest object
     largest_object = max(valid_regions, key=lambda r: r.area)
     largest_diameter = np.round(calculate_real_diameter(largest_object))
 
-    # Find the smallest object
+    # Get image dimensions for border detection
+    image_height, image_width = binary_image.shape
+    
+    def touches_border(region, img_height, img_width):
+        """Check if an object's bounding box touches the image border."""
+        min_row, min_col, max_row, max_col = region.bbox
+        return (min_row == 0 or min_col == 0 or max_row == img_height or max_col == img_width)
+    
+    # Find the smallest object (excluding border-touching objects)
     smallest_object = None
     smallest_diameter = None
 
     for region in sorted(valid_regions, key=lambda r: r.area):
-        if region.area > 0:  # Ensure the object has pixels
+        if region.area > 0 and not touches_border(region, image_height, image_width):
             smallest_object = region
             smallest_diameter = np.round(calculate_real_diameter(region))
             break  # Stop once the first valid smallest object is found
 
-    return largest_object, smallest_object, largest_diameter, smallest_diameter, labeled_image
+    all_diameters = [calculate_real_diameter(region) for region in valid_regions]
+    all_diameters = np.array(all_diameters)
+    all_diameters = all_diameters[all_diameters > 0]
+    
+    # Calculate minimum bounding box dimension across ALL objects (for fine scale cutoff)
+    # Exclude objects that touch the image border
+    min_bbox_dimensions = []
+    min_feature_object = None
+    min_feature_width = None
+    
+    for region in valid_regions:
+        # Skip objects that touch the border
+        if touches_border(region, image_height, image_width):
+            continue
+            
+        min_row, min_col, max_row, max_col = region.bbox
+        height = max_row - min_row
+        width = max_col - min_col
+        min_dimension = min(height, width)
+        if min_dimension > 0:
+            min_bbox_dimensions.append((min_dimension, region))
+    
+    if len(min_bbox_dimensions) > 0:
+        # Find the object with the minimum bounding box dimension
+        min_dimension, min_feature_object = min(min_bbox_dimensions, key=lambda x: x[0])
+        min_feature_width = np.round(min_dimension)
+
+    plt.figure(figsize=(10, 5))
+    plt.title('Feature width Distribution')
+    plt.hist(all_diameters, bins=100)
+    plt.xlabel('Feature width (pixels)')
+    plt.ylabel('Frequency')
+    plt.tight_layout()
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+        base = os.path.splitext(f_name)[0] if f_name is not None else "image"
+        save_file = os.path.join(save_dir, f"{base}_object_size_hist.png")
+        plt.savefig(save_file, dpi=300, bbox_inches='tight')
+        plt.close()
+    elif show:
+        plt.show()
+    else:
+        plt.close()
+
+    
+
+    return largest_object, smallest_object, largest_diameter, smallest_diameter, min_feature_width, min_feature_object, labeled_image
 
 def find_largest_empty_spaces(binary_array, n, plot=False, save=False, save_path=None):
     """
