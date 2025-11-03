@@ -32,3 +32,4 @@ BC_testing.ipynb
 /.venv/
 /.venv-pyqt/
 .vscode/
+/backup/

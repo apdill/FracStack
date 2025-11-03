@@ -5,8 +5,6 @@ from sklearn.metrics import r2_score
 from scipy.stats import t
 import time
 from numba import njit, prange
-from typing import Optional
-
 from .image_processing import pad_image_for_boxcounting
 
 def generate_random_offsets(sizes, num_offsets, seed=None):
@@ -56,7 +54,6 @@ def generate_random_offsets(sizes, num_offsets, seed=None):
             off[i, j + 1:] = off[i, j]
             
     return off
-
 
 def get_pairwise_slopes(sizes, measures, return_second_order=False):
     """
@@ -149,7 +146,6 @@ def get_pairwise_slopes(sizes, measures, return_second_order=False):
         return slopes, second_order_slopes
     return slopes
 
-
 def detect_scaling_plateau(sizes,
                            measures,
                            window: int = 4,
@@ -230,7 +226,6 @@ def detect_scaling_plateau(sizes,
     # Convert slope indices to data point indices
     # Need +1 because slopes connect consecutive points
     return best_i, best_i + best_len + 1
-
 
 def detect_plateau_pairwise(sizes,
                             measures,
@@ -324,7 +319,6 @@ def detect_plateau_pairwise(sizes,
     stop_idx = best_i + best_len + 2  # +2 because slope differences span 2 more points
     
     return start_idx, stop_idx
-
 
 def detect_plateau_hybrid(sizes,
                           measures,
@@ -440,7 +434,6 @@ def detect_plateau_hybrid(sizes,
     else:
         raise ValueError(f"Unknown method: {method}. Use 'pairwise_first', 'median_first', 'intersection', or 'longest'")
 
-
 def filter_by_occupancy(array, sizes, counts,
                         occ_low=0.05, occ_high=0.95):
     """
@@ -496,7 +489,6 @@ def filter_by_occupancy(array, sizes, counts,
     mask = (occupancy > occ_low) & (occupancy < occ_high)
     
     return sizes[mask], counts[mask]
-
 
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d0(array, sizes, offsets, use_min_count=False):
@@ -605,7 +597,6 @@ def numba_d0(array, sizes, offsets, use_min_count=False):
     
     return results
 
-
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d1(array, sizes, offsets):
     """
@@ -697,7 +688,6 @@ def numba_d1(array, sizes, offsets):
     
     return results
 
-
 @njit(nogil=True, cache=True)
 def get_bounding_box(array):
     """
@@ -768,7 +758,6 @@ def get_bounding_box(array):
     
     return min_row, min_col, max_row + 1, max_col + 1
 
-
 @njit(nogil=True, cache=True)
 def box_intersects_bounds(row, col, size, min_row, min_col, max_row, max_col):
     """
@@ -820,7 +809,6 @@ def box_intersects_bounds(row, col, size, min_row, min_col, max_row, max_col):
     # Box doesn't intersect if it's completely outside the bounds
     return not (box_max_row <= min_row or row >= max_row or 
                 box_max_col <= min_col or col >= max_col)
-
 
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d0_optimized(array, sizes, offsets, use_min_count=False):
@@ -951,7 +939,6 @@ def numba_d0_optimized(array, sizes, offsets, use_min_count=False):
     
     return results
 
-
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d1_optimized(array, sizes, offsets):
     """
@@ -1063,6 +1050,156 @@ def numba_d1_optimized(array, sizes, offsets):
     
     return results
 
+@njit(nogil=True, parallel=True, cache=True)
+def numba_d2(array, sizes, offsets):
+    """
+    Compute correlation (mass) dimension measure (D2) using basic algorithm.
+
+    For each box size and offset, this function partitions the array into
+    non-overlapping boxes, computes the probability mass p_i of each box
+    (box mass divided by total mass), and accumulates the correlation sum
+    Σ p_i². Results are averaged across offsets.
+    """
+    results = np.empty(len(sizes), dtype=np.float64)
+    total_mass = array.sum()
+    H, W = array.shape
+
+    if total_mass <= 0.0:
+        results.fill(0.0)
+        return results
+
+    for idx in prange(len(sizes)):
+        size = sizes[idx]
+        centered_x = (H % size) // 2
+        centered_y = (W % size) // 2
+        total_offsets = min(offsets.shape[1], size**2)
+        corr_sum = 0.0
+
+        for offset_idx in range(total_offsets):
+            if offset_idx == 0:
+                x_off = centered_x
+                y_off = centered_y
+            else:
+                x_off = offsets[idx, offset_idx, 0] % size
+                y_off = offsets[idx, offset_idx, 1] % size
+
+            max_x = x_off + ((H - x_off) // size) * size
+            max_y = y_off + ((W - y_off) // size) * size
+            corr_offset = 0.0
+
+            for x in range(x_off, max_x, size):
+                for y in range(y_off, max_y, size):
+                    mass = array[x:x+size, y:y+size].sum()
+                    if mass > 0.0:
+                        p = mass / total_mass
+                        corr_offset += p * p
+
+            corr_sum += corr_offset
+
+        results[idx] = corr_sum / total_offsets if total_offsets > 0 else 0.0
+
+    return results
+
+@njit(nogil=True, parallel=True, cache=True)
+def numba_d2_optimized(array, sizes, offsets):
+    """
+    Optimized correlation (mass) dimension measure using bounding box culling.
+
+    This version mirrors numba_d1_optimized: it precomputes the bounding box of
+    non-zero pixels to skip obviously empty boxes while producing identical
+    results to the basic implementation.
+    """
+    results = np.empty(len(sizes), dtype=np.float64)
+    total_mass = array.sum()
+    H, W = array.shape
+
+    min_row, min_col, max_row, max_col = get_bounding_box(array)
+
+    if total_mass <= 0.0 or (min_row == max_row and min_col == max_col):
+        results.fill(0.0)
+        return results
+
+    for idx in prange(len(sizes)):
+        size = sizes[idx]
+        centered_x = (H % size) // 2
+        centered_y = (W % size) // 2
+        total_offsets = min(offsets.shape[1], size**2)
+        corr_sum = 0.0
+
+        for offset_idx in range(total_offsets):
+            if offset_idx == 0:
+                x_off = centered_x
+                y_off = centered_y
+            else:
+                x_off = offsets[idx, offset_idx, 0] % size
+                y_off = offsets[idx, offset_idx, 1] % size
+
+            max_x = x_off + ((H - x_off) // size) * size
+            max_y = y_off + ((W - y_off) // size) * size
+            corr_offset = 0.0
+
+            for x in range(x_off, max_x, size):
+                for y in range(y_off, max_y, size):
+                    if box_intersects_bounds(x, y, size, min_row, min_col, max_row, max_col):
+                        mass = array[x:x+size, y:y+size].sum()
+                        if mass > 0.0:
+                            p = mass / total_mass
+                            corr_offset += p * p
+
+            corr_sum += corr_offset
+
+        results[idx] = corr_sum / total_offsets if total_offsets > 0 else 0.0
+
+    return results
+
+@njit(nogil=True, parallel=True, cache=True)
+def numba_d2_gliding(array, sizes):
+    """
+    Compute gliding-window correlation dimension measure.
+
+    Uses summed-area tables to evaluate every possible box position. Returns
+    the mean correlation sum (Σ p_i² / N_windows) for each size along with
+    the total number of evaluated windows.
+    """
+    H, W = array.shape
+    total_mass = array.sum()
+    n_sizes = len(sizes)
+    results = np.empty(n_sizes, dtype=np.float64)
+    window_counts = np.zeros(n_sizes, dtype=np.int64)
+
+    if total_mass <= 0.0:
+        results.fill(0.0)
+        return results, window_counts
+
+    integral = _compute_integral_image(array)
+
+    for idx in prange(n_sizes):
+        size = sizes[idx]
+        if size <= 0 or size > H or size > W:
+            results[idx] = 0.0
+            window_counts[idx] = 0
+            continue
+
+        max_row = H - size + 1
+        max_col = W - size + 1
+        total_windows = max_row * max_col
+        window_counts[idx] = total_windows
+
+        if total_windows == 0:
+            results[idx] = 0.0
+            continue
+
+        corr_sum = 0.0
+        for i in range(max_row):
+            for j in range(max_col):
+                mass = _sum_from_integral(integral, i, j, size)
+                if mass > 0.0:
+                    p = mass / total_mass
+                    corr_sum += p * p
+
+        results[idx] = corr_sum / total_windows
+
+    return results, window_counts
 
 @njit(nogil=True, cache=True)
 def get_sparse_coordinates(array):
@@ -1109,7 +1246,6 @@ def get_sparse_coordinates(array):
                 coords.append((i, j))
     
     return coords
-
 
 @njit(nogil=True, cache=True)
 def count_sparse_boxes(coords, size, x_off, y_off, H, W):
@@ -1187,6 +1323,279 @@ def count_sparse_boxes(coords, size, x_off, y_off, H, W):
     
     return np.sum(box_grid)
 
+@njit(nogil=True, cache=True)
+def _compute_integral_image(array):
+    """
+    Compute summed-area table (integral image) for fast gliding box sums.
+
+    The returned array has shape (H+1, W+1) where each entry contains the sum of
+    all pixels above and to the left of the corresponding position in the input
+    array. Using the extra row/column allows O(1) retrieval of any rectangular
+    sum, which is critical for lacunarity calculations that require the mass of
+    every gliding box position.
+    """
+    H, W = array.shape
+    integral = np.zeros((H + 1, W + 1), dtype=np.float64)
+
+    for i in range(1, H + 1):
+        row_sum = 0.0
+        for j in range(1, W + 1):
+            row_sum += array[i - 1, j - 1]
+            integral[i, j] = integral[i - 1, j] + row_sum
+
+    return integral
+
+@njit(nogil=True, cache=True)
+def _sum_from_integral(integral, top, left, size):
+    """
+    Retrieve sum of a size x size block using the integral image.
+    """
+    bottom = top + size
+    right = left + size
+    return (
+        integral[bottom, right]
+        - integral[top, right]
+        - integral[bottom, left]
+        + integral[top, left]
+    )
+
+
+@njit(nogil=True, parallel=True, cache=True)
+def numba_lacunarity_gliding(array, sizes):
+    """
+    Compute gliding-box lacunarity following Allain & Cloitre (1991).
+
+    Parameters
+    ----------
+    array : np.ndarray
+        2D binary (or positive-valued) array to analyse.
+    sizes : np.ndarray
+        1D array of integer box sizes to evaluate. Sizes greater than the image
+        extent are ignored (returning NaN lacunarity).
+
+    Returns
+    -------
+    tuple of np.ndarray
+        (lacunarity, mean_mass, variance, window_counts) each of length len(sizes).
+        Lacunarity values follow Λ(r) = E[M^2] / E[M]^2 where M is the mass
+        within a gliding box. Variance is unbiased mass variance across gliding
+        positions. Window counts record the number of gliding positions
+        contributing at each scale.
+    """
+    H, W = array.shape
+    integral = _compute_integral_image(array)
+    n_sizes = len(sizes)
+    lacunarity = np.empty(n_sizes, dtype=np.float64)
+    mean_mass = np.empty(n_sizes, dtype=np.float64)
+    variance = np.empty(n_sizes, dtype=np.float64)
+    window_counts = np.zeros(n_sizes, dtype=np.int64)
+
+    for idx in prange(n_sizes):
+        size = sizes[idx]
+        if size <= 0 or size > H or size > W:
+            lacunarity[idx] = np.nan
+            mean_mass[idx] = 0.0
+            variance[idx] = 0.0
+            window_counts[idx] = 0
+            continue
+
+        max_row = H - size + 1
+        max_col = W - size + 1
+        total_windows = max_row * max_col
+        window_counts[idx] = total_windows
+
+        sum_mass = 0.0
+        sum_mass_sq = 0.0
+
+        for i in range(max_row):
+            top = i
+            for j in range(max_col):
+                left = j
+                mass = _sum_from_integral(integral, top, left, size)
+                sum_mass += mass
+                sum_mass_sq += mass * mass
+
+        if total_windows == 0 or sum_mass <= 0.0:
+            lacunarity[idx] = np.nan
+            mean_mass[idx] = 0.0
+            variance[idx] = 0.0
+            continue
+
+        mean_val = sum_mass / total_windows
+        second_moment = sum_mass_sq / total_windows
+        var_val = second_moment - mean_val * mean_val
+        if var_val < 0.0:
+            var_val = 0.0
+
+        mean_mass[idx] = mean_val
+        variance[idx] = var_val
+        lacunarity[idx] = second_moment / (mean_val * mean_val)
+
+    return lacunarity, mean_mass, variance, window_counts
+
+@njit(nogil=True, parallel=True, cache=True)
+def numba_lacunarity_boxcount(array, sizes, offsets, use_min=False, conditional=False):
+    """
+    Compute box-count (non-gliding) lacunarity following Plotnick et al. (1996).
+
+    For each box size, this routine evaluates non-overlapping grids defined by
+    the provided offsets and computes lacunarity according to:
+
+        Λ_box(r) = N(r) * Σ n_i^2 / (Σ n_i)^2
+
+    where N(r) is the number of boxes in the partition and n_i the mass per
+    box. When `conditional=True`, only occupied boxes (n_i > 0) contribute,
+    producing the conditional version described by Plotnick et al. When
+    `conditional=False`, all boxes are included (unconditional lacunarity),
+    capturing both mass and void statistics.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        2D binary (or positive-valued) array to analyse.
+    sizes : np.ndarray
+        1D array of integer box sizes to evaluate.
+    offsets : np.ndarray
+        Pre-generated offsets of shape (len(sizes), num_offsets, 2). Identical
+        to the structure used for the D0 kernels.
+    use_min : bool, default False
+        If True, select the minimum lacunarity across offsets. Otherwise,
+        return the mean lacunarity across valid offsets.
+    conditional : bool, default False
+        If True, compute conditional lacunarity (occupied boxes only).
+        Otherwise include empty boxes (unconditional lacunarity).
+
+    Returns
+    -------
+    tuple of np.ndarray
+        (lacunarity, mean_mass, variance, window_counts) where each array has
+        length len(sizes). Mean and variance correspond to the set of boxes
+        used (occupied-only when conditional=True, otherwise all boxes).
+        window_counts reports the number of boxes contributing per size.
+    """
+    H, W = array.shape
+    integral = _compute_integral_image(array)
+    min_row, min_col, max_row, max_col = get_bounding_box(array)
+    n_sizes = len(sizes)
+
+    lacunarity = np.empty(n_sizes, dtype=np.float64)
+    mean_mass = np.empty(n_sizes, dtype=np.float64)
+    variance = np.empty(n_sizes, dtype=np.float64)
+    window_counts = np.zeros(n_sizes, dtype=np.int64)
+
+    for idx in prange(n_sizes):
+        size = sizes[idx]
+        if size <= 0 or size > H or size > W:
+            lacunarity[idx] = np.nan
+            mean_mass[idx] = 0.0
+            variance[idx] = 0.0
+            window_counts[idx] = 0
+            continue
+
+        total_offsets = min(offsets.shape[1], size * size)
+        if total_offsets <= 0:
+            lacunarity[idx] = np.nan
+            mean_mass[idx] = 0.0
+            variance[idx] = 0.0
+            window_counts[idx] = 0
+            continue
+
+        # Aggregation variables
+        best_lac = np.inf
+        best_mean = 0.0
+        best_var = 0.0
+        best_windows = 0
+
+        sum_lac = 0.0
+        sum_mean = 0.0
+        sum_var = 0.0
+        sum_windows = 0.0
+        valid_offsets = 0
+
+        for offset_idx in range(total_offsets):
+            if offset_idx == 0:
+                x_off = (H % size) // 2
+                y_off = (W % size) // 2
+            else:
+                x_off = offsets[idx, offset_idx, 0] % size
+                y_off = offsets[idx, offset_idx, 1] % size
+
+            max_x = x_off + ((H - x_off) // size) * size
+            max_y = y_off + ((W - y_off) // size) * size
+
+            if max_x <= x_off or max_y <= y_off:
+                continue
+
+            occ = 0
+            total_boxes = 0
+            sum_mass = 0.0
+            sum_mass_sq = 0.0
+
+            for x in range(x_off, max_x, size):
+                for y in range(y_off, max_y, size):
+                    total_boxes += 1
+                    mass = 0.0
+                    if box_intersects_bounds(x, y, size, min_row, min_col, max_row, max_col):
+                        mass = _sum_from_integral(integral, x, y, size)
+
+                    if conditional:
+                        if mass > 0.0:
+                            occ += 1
+                            sum_mass += mass
+                            sum_mass_sq += mass * mass
+                    else:
+                        if mass > 0.0:
+                            occ += 1
+                        sum_mass += mass
+                        sum_mass_sq += mass * mass
+
+            boxes_used = occ if conditional else total_boxes
+
+            if boxes_used == 0 or sum_mass <= 0.0:
+                continue
+
+            inv_boxes = 1.0 / boxes_used
+            mean_val = sum_mass * inv_boxes
+            second_moment = sum_mass_sq * inv_boxes
+            var_val = second_moment - mean_val * mean_val
+            if var_val < 0.0:
+                var_val = 0.0
+            lac_val = (boxes_used * sum_mass_sq) / (sum_mass * sum_mass)
+
+            valid_offsets += 1
+
+            if use_min:
+                if lac_val < best_lac:
+                    best_lac = lac_val
+                    best_mean = mean_val
+                    best_var = var_val
+                    best_windows = boxes_used
+            else:
+                sum_lac += lac_val
+                sum_mean += mean_val
+                sum_var += var_val
+                sum_windows += boxes_used
+
+        if valid_offsets == 0:
+            lacunarity[idx] = np.nan
+            mean_mass[idx] = 0.0
+            variance[idx] = 0.0
+            window_counts[idx] = 0
+            continue
+
+        if use_min:
+            lacunarity[idx] = best_lac
+            mean_mass[idx] = best_mean
+            variance[idx] = best_var
+            window_counts[idx] = best_windows
+        else:
+            inv = 1.0 / valid_offsets
+            lacunarity[idx] = sum_lac * inv
+            mean_mass[idx] = sum_mean * inv
+            variance[idx] = sum_var * inv
+            window_counts[idx] = int(np.round(sum_windows * inv))
+
+    return lacunarity, mean_mass, variance, window_counts
 
 @njit(nogil=True, parallel=True, cache=True)
 def numba_d0_sparse(array, sizes, offsets, sparsity_threshold=0.01, use_min_count=False):
@@ -1318,20 +1727,214 @@ def numba_d0_sparse(array, sizes, offsets, sparsity_threshold=0.01, use_min_coun
     
     return results
 
+def lacunarity_boxcount(array,
+                        num_sizes=10,
+                        min_size=None,
+                        max_size=None,
+                        sizes=None,
+                        pad_factor=None,
+                        pad_kwargs=None,
+                        method='gliding',
+                        num_offsets=1,
+                        use_min=False,
+                        seed=None,
+                        conditional=False):
+    """
+    Compute lacunarity using either gliding-box or non-gliding (box-count) methods.
 
-def boxcount(array, 
-             mode='D0', 
-             num_sizes=50, 
-             min_size=None, 
-             max_size=None, 
-             num_offsets=50, 
-             use_optimization=True, 
-             sparse_threshold=0.01, 
-             use_min_count=True, 
-             seed=42,   
-             use_integral_image=True,
-             custom_sizes=None,
-             ):
+    Parameters
+    ----------
+    array : np.ndarray
+        2D binary array to analyse. Non-binary inputs are cast to float32.
+    num_sizes : int, default 10
+        Number of box sizes to generate when explicit `sizes` are not provided.
+    min_size : int, optional
+        Minimum box size. Defaults to 1.
+    max_size : int, optional
+        Maximum box size. Defaults to min(array.shape).
+    sizes : array-like, optional
+        Explicit iterable of box sizes to evaluate. When provided, `num_sizes`,
+        `min_size`, and `max_size` are ignored.
+    pad_factor : float, optional
+        Optional padding factor applied via pad_image_for_boxcounting to reduce
+        edge artefacts prior to lacunarity calculation. Set to None to disable.
+    pad_kwargs : dict, optional
+        Additional keyword arguments forwarded to pad_image_for_boxcounting.
+    method : {'gliding', 'box'}, default 'gliding'
+        Choose between gliding-box lacunarity (Allain & Cloitre, 1991) and
+        non-gliding box-count lacunarity (Plotnick et al., 1996).
+    num_offsets : int, default 1
+        Number of grid offsets to evaluate for the box-count method. Ignored
+        when `method='gliding'`.
+    use_min : bool, default False
+        For the box-count method, return the minimum lacunarity across offsets
+        instead of the mean.
+    seed : int, optional
+        Random seed for reproducible offset generation (box-count method).
+    conditional : bool, default False
+        When `method='box'`, compute conditional lacunarity (occupied boxes
+        only). The default includes empty boxes (unconditional variant).
+
+    Returns
+    -------
+    tuple
+        (sizes, lacunarity, mean_mass, variance, window_counts) where all arrays
+        are aligned with the evaluated box sizes. Lacunarity entries may be NaN
+        when a scale has no occupied windows.
+    """
+    if pad_kwargs is None:
+        pad_kwargs = {}
+
+    padded_array = array
+    if pad_factor is not None:
+        max_dim = np.max(array.shape) if max_size is None else max_size
+        padded_array = pad_image_for_boxcounting(array, max_dim, pad_factor=pad_factor, **pad_kwargs)
+
+    padded_array = np.ascontiguousarray(padded_array.astype(np.float32))
+    H, W = padded_array.shape
+
+    if sizes is not None:
+        size_list = sorted({int(s) for s in sizes if s is not None})
+    else:
+        min_size = 1 if min_size is None else int(min_size)
+        max_dim = min(H, W) if max_size is None else min(int(max_size), min(H, W))
+        min_clamped = max(1, min_size)
+        if max_dim < min_clamped:
+            return (
+                np.array([], dtype=np.int32),
+                np.array([], dtype=np.float64),
+                np.array([], dtype=np.float64),
+                np.array([], dtype=np.float64),
+                np.array([], dtype=np.int64),
+            )
+        size_list = get_sizes(num_sizes, min_clamped, max_dim)
+
+    # Filter invalid sizes (<=0 or exceeding current image dimensions)
+    valid_sizes = [s for s in size_list if s is not None and s > 0 and s <= min(H, W)]
+    if not valid_sizes:
+        return (
+            np.array([], dtype=np.int32),
+            np.array([], dtype=np.float64),
+            np.array([], dtype=np.float64),
+            np.array([], dtype=np.float64),
+            np.array([], dtype=np.int64),
+        )
+
+    sizes_arr = np.array(valid_sizes, dtype=np.int32)
+
+    if method == 'gliding':
+        lac, mean_mass, var, window_counts = numba_lacunarity_gliding(padded_array, sizes_arr)
+    elif method == 'box':
+        offsets = generate_random_offsets(sizes_arr, num_offsets, seed=seed)
+        lac, mean_mass, var, window_counts = numba_lacunarity_boxcount(
+            padded_array,
+            sizes_arr,
+            offsets,
+            use_min=use_min,
+            conditional=conditional,
+        )
+    else:
+        raise ValueError("method must be 'gliding' or 'box'")
+
+    return sizes_arr, lac, mean_mass, var, window_counts
+
+def correlation_dimension(array,
+                          num_sizes=10,
+                          min_size=None,
+                          max_size=None,
+                          sizes=None,
+                          pad_factor=None,
+                          pad_kwargs=None,
+                          method='box',
+                          num_offsets=1,
+                          seed=None,
+                          use_optimization=True):
+    """
+    Compute correlation (mass) dimension measures with box-count or gliding windows.
+
+    Parameters
+    ----------
+    array : np.ndarray
+        2D binary or grayscale array.
+    num_sizes : int, default 10
+        Number of box sizes to generate when explicit `sizes` not provided.
+    min_size, max_size : int, optional
+        Minimum and maximum box sizes.
+    sizes : array-like, optional
+        Explicit box sizes.
+    pad_factor : float, optional
+        Optional padding factor applied via pad_image_for_boxcounting.
+    pad_kwargs : dict, optional
+        Additional padding kwargs.
+    method : {'box', 'gliding'}, default 'box'
+        Choose non-overlapping tilings or gliding windows.
+    num_offsets : int, default 1
+        Number of offsets for box-count method.
+    seed : int, optional
+        Seed for offset generation.
+    use_optimization : bool, default True
+        Whether to use optimized correlation kernels for method='box'.
+
+    Returns
+    -------
+    tuple
+        (sizes, correlation_sums, window_counts) where correlation_sums is Σ p_i²
+        (averaged across offsets for method='box') and window_counts gives the
+        number of windows evaluated at each scale.
+    """
+    if pad_kwargs is None:
+        pad_kwargs = {}
+
+    padded_array = array
+    if pad_factor is not None:
+        max_dim = np.max(array.shape) if max_size is None else max_size
+        padded_array = pad_image_for_boxcounting(array, max_dim, pad_factor=pad_factor, **pad_kwargs)
+
+    padded_array = np.ascontiguousarray(padded_array.astype(np.float32))
+    H, W = padded_array.shape
+
+    if sizes is not None:
+        size_list = sorted({int(s) for s in sizes if s is not None})
+    else:
+        min_size = 1 if min_size is None else int(min_size)
+        max_dim = min(H, W) if max_size is None else min(int(max_size), min(H, W))
+        min_clamped = max(1, min_size)
+        if max_dim < min_clamped:
+            return (
+                np.array([], dtype=np.int32),
+                np.array([], dtype=np.float64),
+                np.array([], dtype=np.int64),
+            )
+        size_list = get_sizes(num_sizes, min_clamped, max_dim)
+
+    valid_sizes = [s for s in size_list if s is not None and s > 0 and s <= min(H, W)]
+    if not valid_sizes:
+        return (
+            np.array([], dtype=np.int32),
+            np.array([], dtype=np.float64),
+            np.array([], dtype=np.int64),
+        )
+
+    sizes_arr = np.array(valid_sizes, dtype=np.int32)
+
+    if method == 'gliding':
+        print('Using gliding method')
+        corr, window_counts = numba_d2_gliding(padded_array, sizes_arr)
+    elif method == 'box':
+        print('Using box method')
+        offsets = generate_random_offsets(sizes_arr, num_offsets, seed=seed)
+        if use_optimization:
+            corr = numba_d2_optimized(padded_array, sizes_arr, offsets)
+        else:
+            corr = numba_d2(padded_array, sizes_arr, offsets)
+        window_counts = (np.floor_divide(H, sizes_arr) * np.floor_divide(W, sizes_arr)).astype(np.int64)
+    else:
+        raise ValueError("method must be 'box' or 'gliding'")
+
+    return sizes_arr, corr, window_counts
+
+def boxcount(array, mode='D0', num_sizes=10, min_size=None, max_size=None, num_offsets=1, 
+             use_optimization=True, sparse_threshold=0.01, use_min_count=True, seed=None):
     """
     Perform box counting analysis with automatic optimization level selection.
     
@@ -1370,9 +1973,7 @@ def boxcount(array,
     seed : int, optional
         Random seed for reproducible grid offset generation. If None, uses
         current random state.
-    use_integral_image : bool, default False
-        Whether to use integral image optimization. If True, uses integral_image_d0
-        instead of numba_d0_optimized.
+        
     Returns
     -------
     tuple
@@ -1416,12 +2017,7 @@ def boxcount(array,
     array = np.ascontiguousarray(array.astype(np.float32))
     min_size = 1 if min_size is None else min_size
     max_size = max(min_size + 1, min(array.shape)//5) if max_size is None else max_size
-    
-    if custom_sizes is None:
-        sizes = get_sizes(num_sizes, min_size, max_size)
-    else:
-        sizes = custom_sizes
-        
+    sizes = get_sizes(num_sizes, min_size, max_size)
     sizes_arr = np.array(sizes)
     
     # Pre-generate random offsets to avoid thread safety issues in numba parallel functions
@@ -1437,33 +2033,25 @@ def boxcount(array,
         if mode == 'D0' and sparsity <= sparse_threshold:
             counts = numba_d0_sparse(array, sizes_arr, offsets, sparse_threshold, use_min_count)
         elif mode == 'D0':
-            if use_integral_image:
-                start_time = time.perf_counter()
-                sat = build_sat(array)
-                end_time = time.perf_counter()
-                print(f"Time taken to build summed area table: {end_time - start_time} seconds")
-
-                start_time = time.perf_counter()
-                counts = counts_from_sat(sat, sizes_arr, offsets, use_min_count)
-                end_time = time.perf_counter()
-                print(f"Time taken to compute box counts: {end_time - start_time} seconds")
-            else:
-                counts = numba_d0_optimized(array, sizes_arr, offsets, use_min_count)
+            counts = numba_d0_optimized(array, sizes_arr, offsets, use_min_count)
         elif mode == 'D1':
             counts = numba_d1_optimized(array, sizes_arr, offsets)
+        elif mode == 'D2':
+            counts = numba_d2_optimized(array, sizes_arr, offsets)
         else:
-            raise ValueError("Invalid mode, use 'D0' or 'D1'")
+            raise ValueError("Invalid mode, use 'D0', 'D1', or 'D2'")
     else:
         # Fall back to original implementation
         if mode == 'D0':
             counts = numba_d0(array, sizes_arr, offsets, use_min_count)
         elif mode == 'D1':
             counts = numba_d1(array, sizes_arr, offsets)
+        elif mode == 'D2':
+            counts = numba_d2(array, sizes_arr, offsets)
         else:
-            raise ValueError("Invalid mode, use 'D0' or 'D1'")
+            raise ValueError("Invalid mode, use 'D0', 'D1', or 'D2'")
     
     return sizes, counts.tolist()
-
 
 def get_sizes(num_sizes, minsize, maxsize):
     """
@@ -1523,16 +2111,9 @@ def get_sizes(num_sizes, minsize, maxsize):
                 return sizes[:index]
     return sizes
 
-
-def compute_dimension(sizes, 
-                      measures, 
-                      mode='D0', 
-                      use_weighted_fit=False, 
-                      use_bootstrap_ci=True,
-                      bootstrap_method='residual', 
-                      n_bootstrap=1000, 
-                      alpha=0.05, 
-                      random_seed=None):
+def compute_dimension(sizes, measures, mode='D0', use_weighted_fit=True, use_bootstrap_ci=True,
+                      bootstrap_method='residual', n_bootstrap=1000, alpha=0.05,
+                      random_seed=None, embedding_dim=2):
     """
     Compute fractal dimension from box counting results using robust statistical methods.
     
@@ -1549,10 +2130,12 @@ def compute_dimension(sizes,
         Corresponding measures for each box size:
         - For D0: box counts N(ε)
         - For D1: entropy values H(ε)
+        - For D2: correlation sums C(ε) = Σ p_i²
     mode : str, default 'D0'
         Type of dimension to compute:
         - 'D0': Capacity dimension from log10(N) vs log10(ε)
         - 'D1': Information dimension from H vs log2(ε)
+        - 'D2': Correlation (mass) dimension from log10(C) vs log10(ε)
     use_weighted_fit : bool, default True
         Whether to use weighted least squares (WLS) instead of ordinary least squares (OLS).
         WLS addresses heteroscedasticity where measurement variance increases at finer scales.
@@ -1563,14 +2146,16 @@ def compute_dimension(sizes,
         Bootstrap method to use:
         - 'residual': Residual bootstrap (recommended) - resamples residuals while keeping
           x-values fixed, preserving the structure of the regression
-        - 'pairs': Pairs bootstrap - resamples pairs of data points while keeping
-          x-values fixed, preserving the structure of the regression
+        - 'offset': Not yet implemented - would resample offset positions
     n_bootstrap : int, default 1000
         Number of bootstrap resamples for confidence interval estimation
     alpha : float, default 0.05
         Significance level for confidence intervals (0.05 gives 95% CI)
     random_seed : int, optional
         Random seed for bootstrap reproducibility. If None, uses current random state.
+    embedding_dim : float, default 2
+        Embedding dimension correction subtracted from the fitted slope when
+        computing D2. For gliding-window correlation sums in 2D, pass 2.0.
         
     Returns
     -------
@@ -1620,7 +2205,7 @@ def compute_dimension(sizes,
     See Also
     --------
     bootstrap_residual : Residual bootstrap implementation
-    bootstrap_pairs : Standard bootstrap for dimension estimation
+    bootstrap_dimension : Standard bootstrap for dimension estimation
     boxcount : Function that generates the input sizes and measures
     """
     
@@ -1725,8 +2310,40 @@ def compute_dimension(sizes,
                     fit, cov = np.polyfit(x, y, 1, cov=True)
                     r2 = r2_score(y, fit[0] * x + fit[1])
                     
+            elif mode == 'D2':
+                x = np.log10(valid_sizes)
+                y = np.log10(valid_measures)
+                w = np.ones_like(x)
+                
+                X = np.vstack([x, np.ones_like(x)]).T
+                W = np.diag(w)
+                
+                try:
+                    XtWX = X.T @ W @ X
+                    XtWy = X.T @ W @ y
+                    beta = np.linalg.solve(XtWX, XtWy)
+                    slope, intercept = beta
+                    fit = np.array([slope, intercept])
+                    
+                    y_pred = slope * x + intercept
+                    y_mean = np.sum(w * y) / np.sum(w)
+                    ss_res = np.sum(w * (y - y_pred)**2)
+                    ss_tot = np.sum(w * (y - y_mean)**2)
+                    r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                    
+                    n = len(x)
+                    residuals = y - y_pred
+                    if use_weighted_fit:
+                        residuals -= np.average(residuals, weights=w)
+                    else:
+                        residuals -= residuals.mean()
+                    sigma_sq = np.sum(w * residuals**2) / (n - 2)
+                    cov = np.linalg.inv(XtWX) * sigma_sq
+                except np.linalg.LinAlgError:
+                    fit, cov = np.polyfit(x, y, 1, cov=True)
+                    r2 = r2_score(y, fit[0] * x + fit[1])
             else:
-                raise ValueError(f"Invalid mode: {mode}. Use 'D0' or 'D1'")
+                raise ValueError(f"Invalid mode: {mode}. Use 'D0', 'D1', or 'D2'")
         else:
             # Original OLS approach (for comparison)
             if mode == 'D0':
@@ -1735,10 +2352,18 @@ def compute_dimension(sizes,
             elif mode == 'D1':
                 fit, cov = np.polyfit(np.log2(valid_sizes), valid_measures, 1, cov=True)
                 r2 = r2_score(valid_measures, fit[0] * np.log2(valid_sizes) + fit[1])
+            elif mode == 'D2':
+                fit, cov = np.polyfit(np.log10(valid_sizes), np.log10(valid_measures), 1, cov=True)
+                r2 = r2_score(np.log10(valid_measures), fit[0] * np.log10(valid_sizes) + fit[1])
             else:
-                raise ValueError(f"Invalid mode: {mode}. Use 'D0' or 'D1'")
+                raise ValueError(f"Invalid mode: {mode}. Use 'D0', 'D1', or 'D2'")
         
-        d_value = -fit[0] 
+        if mode in ('D0', 'D1'):
+            d_value = -fit[0]
+        elif mode == 'D2':
+            d_value = fit[0] - embedding_dim
+        else:
+            d_value = -fit[0]
 
         # --- Compute confidence intervals ---
         if use_bootstrap_ci and bootstrap_method == 'residual':
@@ -1746,16 +2371,13 @@ def compute_dimension(sizes,
             _, ci_low, ci_high = bootstrap_residual(
                 valid_sizes, valid_measures, mode=mode, 
                 n_bootstrap=n_bootstrap, alpha=alpha, 
-                use_weighted_fit=use_weighted_fit, random_seed=random_seed
+                use_weighted_fit=use_weighted_fit, random_seed=random_seed,
+                embedding_dim=embedding_dim
             )
             
-        elif use_bootstrap_ci and bootstrap_method == 'pairs':
-            # Pairs bootstrap
-            _, ci_low, ci_high = bootstrap_pairs(
-                valid_sizes, valid_measures, mode=mode, 
-                n_bootstrap=n_bootstrap, alpha=alpha, 
-                use_weighted_fit=use_weighted_fit, random_seed=random_seed
-            )
+        elif use_bootstrap_ci and bootstrap_method == 'offset':
+            # Offset bootstrap will be implemented later
+            raise NotImplementedError("Offset bootstrap not yet implemented. Use bootstrap_method='residual'")
             
         else:
             # Traditional t-based confidence intervals
@@ -1775,8 +2397,15 @@ def compute_dimension(sizes,
             #intercept_ci = (fit[1] - t_crit * intercept_se, fit[1] + t_crit * intercept_se)
 
             # 5) If you want the CI for d_value = -slope, just flip signs and ensure lower value comes first
-            ci_low =  min(-slope_ci[1], -slope_ci[0])
-            ci_high = max(-slope_ci[1], -slope_ci[0])
+            if mode in ('D0', 'D1'):
+                ci_low =  min(-slope_ci[1], -slope_ci[0])
+                ci_high = max(-slope_ci[1], -slope_ci[0])
+            elif mode == 'D2':
+                ci_low = slope_ci[0] - embedding_dim
+                ci_high = slope_ci[1] - embedding_dim
+            else:
+                ci_low =  min(-slope_ci[1], -slope_ci[0])
+                ci_high = max(-slope_ci[1], -slope_ci[0])
     
     else:
         # Handle cases with insufficient data
@@ -1790,7 +2419,6 @@ def compute_dimension(sizes,
     
     return valid_sizes, valid_measures, d_value, fit, r2, ci_low, ci_high
 
-
 def bootstrap_residual(
         sizes,
         measures,
@@ -1798,8 +2426,9 @@ def bootstrap_residual(
         n_bootstrap: int = 1000,
         alpha: float = 0.05,
         use_weighted_fit: bool = True,
-        random_seed: int | None = None,
+        random_seed: Optional[int] = None,
         studentized: bool = True,
+        embedding_dim: float = 2.0,
     ):
     """
     Compute bootstrap confidence intervals for fractal dimensions using residual resampling.
@@ -1820,6 +2449,7 @@ def bootstrap_residual(
         Type of dimension analysis:
         - "D0": Capacity dimension using log10(N) vs log10(ε)
         - "D1": Information dimension using H vs log2(ε)
+        - "D2": Correlation dimension using log10(C) vs log10(ε)
     n_bootstrap : int, default 1000
         Number of bootstrap resamples. More resamples give more precise confidence
         intervals but increase computation time.
@@ -1834,6 +2464,9 @@ def bootstrap_residual(
         Whether to use studentized (t-type) confidence intervals. If True, uses the
         bootstrap distribution of t-statistics; if False, uses percentile method.
         Studentized intervals generally have better coverage properties.
+    embedding_dim : float, default 0
+        Embedding dimension correction to subtract from the fitted slope when
+        mode='D2'. Use 2.0 for gliding estimates in 2D.
         
     Returns
     -------
@@ -1880,7 +2513,7 @@ def bootstrap_residual(
     
     See Also
     --------
-    bootstrap_pairs : Standard bootstrap resampling data points
+    bootstrap_dimension : Standard bootstrap resampling data points
     compute_dimension : Main function that calls this for bootstrap CI
     """
     rng = np.random.default_rng(random_seed)
@@ -1897,8 +2530,12 @@ def bootstrap_residual(
         x = np.log2(sizes)
         y = measures
         w = 1.0 / (measures + 1e-10) if use_weighted_fit else np.ones_like(x)
+    elif mode == "D2":
+        x = np.log10(sizes)
+        y = np.log10(measures)
+        w = np.ones_like(x)
     else:
-        raise ValueError("mode must be 'D0' or 'D1'")
+        raise ValueError("mode must be 'D0', 'D1', or 'D2'")
 
     # Small jitter to avoid singular XtWX if duplicate x values exist
     x = x + 1e-12 * rng.standard_normal(x.shape)
@@ -1930,7 +2567,15 @@ def bootstrap_residual(
     slope_hat, intercept_hat = beta_hat
     se_hat = np.sqrt(cov_hat[0, 0])                    # s.e. of slope
     y_hat = X @ beta_hat
-    d_hat = -slope_hat
+
+    if mode in ("D0", "D1"):
+        sign = -1.0
+        correction = 0.0
+    else:  # D2 or other positive-slope modes
+        sign = 1.0
+        correction = embedding_dim
+
+    d_hat = sign * slope_hat - correction
 
     # Bootstrap loop
     slopes   = np.empty(n_bootstrap)
@@ -1968,25 +2613,20 @@ def bootstrap_residual(
         slope_high = slope_hat - q_high * se_hat
     else:
         # Percentile bootstrap confidence intervals
-        d_star = -slopes
-        slope_low, slope_high = -np.percentile(d_star, [100*(1-alpha/2),
-                                                        100*(alpha/2)])
+        slope_low, slope_high = np.percentile(slopes, [100*(alpha/2),
+                                                       100*(1-alpha/2)])
 
-    ci_low  = -slope_high     # convert back to dimension
-    ci_high = -slope_low
+    if mode in ("D0", "D1"):
+        ci_low = -slope_high
+        ci_high = -slope_low
+    else:
+        ci_low = slope_low - embedding_dim
+        ci_high = slope_high - embedding_dim
 
     return d_hat, ci_low, ci_high
 
-
-def bootstrap_pairs(sizes,
-                    measures,
-                    mode='D0',
-                    n_bootstrap=1000,
-                    alpha=0.05,
-                    use_weighted_fit=True,
-                    random_seed=None,
-                    studentized=False,
-                ):
+def bootstrap_dimension(sizes, measures, mode='D0', n_bootstrap=1000, alpha=0.05,
+                        embedding_dim=2.0):
     """
     Compute fractal dimension confidence intervals using standard bootstrap resampling.
     
@@ -2001,16 +2641,19 @@ def bootstrap_pairs(sizes,
     sizes : array-like
         Box sizes used in the scaling analysis
     measures : array-like
-        Corresponding measures (box counts for D0, entropy values for D1)
+        Corresponding measures (box counts for D0, entropy values for D1, correlation sums for D2)
     mode : str, default 'D0'
         Type of dimension to compute:
         - 'D0': Capacity dimension using log10(N) vs log10(ε)
         - 'D1': Information dimension using H vs log2(ε)
+        - 'D2': Correlation dimension using log10(C) vs log10(ε)
     n_bootstrap : int, default 1000
         Number of bootstrap resamples. More resamples give more stable confidence
         intervals but increase computation time.
     alpha : float, default 0.05
         Significance level for confidence intervals. Default 0.05 gives 95% CI.
+    embedding_dim : float, default 2
+        Embedding dimension correction to subtract from slopes when mode='D2'.
         
     Returns
     -------
@@ -2052,7 +2695,7 @@ def bootstrap_pairs(sizes,
     --------
     >>> sizes = [1, 2, 4, 8, 16, 32]
     >>> counts = [1000, 250, 63, 16, 4, 1]
-    >>> d_med, d_low, d_high = bootstrap_pairs(sizes, counts, mode='D0', n_bootstrap=1000)
+    >>> d_med, d_low, d_high = bootstrap_dimension(sizes, counts, mode='D0', n_bootstrap=1000)
     >>> print(f"D0 = {d_med:.3f} [{d_low:.3f}, {d_high:.3f}]")
     
     See Also
@@ -2060,93 +2703,39 @@ def bootstrap_pairs(sizes,
     bootstrap_residual : Residual bootstrap method (generally preferred)
     compute_dimension : Main function with multiple bootstrap options
     """
-    rng = np.random.default_rng(random_seed)
-    sizes = np.asarray(sizes, dtype=float)
-    measures = np.asarray(measures, dtype=float)
-    n = sizes.size
+    sizes = np.array(sizes)
+    measures = np.array(measures)
+    n = len(sizes)
 
-    # helpers to match your residual function’s conventions
-    def prepare_xyw(sz, ms, mode, use_w):
-        if mode == 'D0':
-            x = np.log10(sz)
-            y = np.log10(ms)
-            w = ms if use_w else np.ones_like(x)            # var(log N) ~ 1/N
-        elif mode == 'D1':
-            x = np.log2(sz)
-            y = ms
-            w = (1.0 / (ms + 1e-10)) if use_w else np.ones_like(x)
-        else:
-            raise ValueError("mode must be 'D0' or 'D1'")
-        return x, y, w
-
-    def wls_slope(x, y, w=None, ridge=1e-12):
-        X = np.column_stack((x, np.ones_like(x)))
-        if w is None:
-            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
-            yhat = X @ beta
-            # OLS cov
-            rss = np.sum((y - yhat)**2)
-            sigma2 = rss / (len(y) - 2)
-            cov = np.linalg.inv(X.T @ X) * sigma2
-            return beta[0], beta, yhat, cov
-        # WLS via sqrt(w) scaling
-        sw = np.sqrt(np.clip(w, 0.0, np.inf))
-        Xw = X * sw[:, None]
-        yw = y * sw
-        XtX = Xw.T @ Xw
-        XtX.flat[::XtX.shape[0]+1] += ridge
-        beta = np.linalg.solve(XtX, Xw.T @ yw)
-        yhat = X @ beta
-        # Unbiased sigma^2 under precision weights
-        sigma2 = np.sum(w * (y - yhat)**2) / (len(y) - 2)
-        cov = np.linalg.inv(X.T @ (w[:, None] * X)) * sigma2
-        return beta[0], beta, yhat, cov
-
-    # Point estimate on original data
-    x0, y0, w0 = prepare_xyw(sizes, measures, mode, use_weighted_fit)
-    slope_hat, beta_hat, yhat, cov_hat = wls_slope(x0, y0, (w0 if use_weighted_fit else None))
-    d_hat = -slope_hat
-    se_hat = float(np.sqrt(cov_hat[0, 0]))
-
-    d_samples = []
-    t_stats = [] if studentized else None
+    # Store dimension from each bootstrap iteration
+    d_values = []
 
     for _ in range(n_bootstrap):
-        idx = rng.integers(0, n, size=n)  # resample pairs
-        s_b = sizes[idx]
-        m_b = measures[idx]
-        x_b, y_b, w_b = prepare_xyw(s_b, m_b, mode, use_weighted_fit)
+        # Randomly resample data points with replacement
+        resample_idx = np.random.randint(0, n, size=n)
+        resampled_sizes = sizes[resample_idx]
+        resampled_measures = measures[resample_idx]
 
-        try:
-            slope_b, _, _, cov_b = wls_slope(x_b, y_b, (w_b if use_weighted_fit else None))
-        except np.linalg.LinAlgError:
-            # skip rare singular draws
-            continue
+        # Fit slope based on the chosen mode using OLS
+        if mode == 'D0':
+            slope, _ = np.polyfit(np.log10(resampled_sizes), np.log10(resampled_measures), 1)
+            d_values.append(-slope)
+        elif mode == 'D1':
+            slope, _ = np.polyfit(np.log2(resampled_sizes), resampled_measures, 1)
+            d_values.append(-slope)
+        elif mode == 'D2':
+            slope, _ = np.polyfit(np.log10(resampled_sizes), np.log10(resampled_measures), 1)
+            d_values.append(slope - embedding_dim)
+        else:
+            raise ValueError("Invalid mode. Use 'D0', 'D1', or 'D2'.")
 
-        d_b = -slope_b
-        d_samples.append(d_b)
+    # Compute statistics from bootstrap distribution
+    d_values = np.array(d_values)
+    d_median = np.median(d_values)
+    d_lower = np.percentile(d_values, 100 * (alpha / 2))
+    d_upper = np.percentile(d_values, 100 * (1 - alpha / 2))
 
-        if studentized:
-            se_b = float(np.sqrt(cov_b[0, 0]))
-            # studentized pivot for slope, then map to D with a sign:
-            # t* = (slope_b - slope_hat)/se_b, same as -(d_b - d_hat)/se_b
-            t_stats.append((slope_b - slope_hat) / max(se_b, 1e-20))
-
-    d_samples = np.array(d_samples)
-
-    if d_samples.size == 0:
-        return d_hat, np.nan, np.nan
-
-    if studentized:
-        q_lo, q_hi = np.quantile(np.array(t_stats), [1 - alpha/2, alpha/2])
-        slope_low  = slope_hat - q_lo  * se_hat
-        slope_high = slope_hat - q_hi * se_hat
-        ci_low, ci_high = -slope_high, -slope_low
-    else:
-        # percentile CI on D directly
-        ci_low, ci_high = np.quantile(d_samples, [alpha/2, 1 - alpha/2])
-
-    return float(d_hat), float(ci_low), float(ci_high)
+    return d_median, d_lower, d_upper
 
 def dynamic_boxcount(array, 
                      mode='D0', 
@@ -2780,7 +3369,6 @@ def dynamic_boxcount(array,
         'fallback_mode': not threshold_met if stretch else False
     }
 
-
 def benchmark_boxcount_optimizations(array, mode='D0', num_sizes=20, min_size=16, max_size=None, num_offsets=10, use_min_count=False, seed=None):
     """
     Benchmark different boxcount optimization levels to show performance improvements.
@@ -2873,7 +3461,6 @@ def benchmark_boxcount_optimizations(array, mode='D0', num_sizes=20, min_size=16
         print(f"  Sparse: {sparse_time:.3f}s ({original_time/sparse_time:.2f}x speedup)")
     
     return results
-
 
 def plot_dynamic_boxcount_results(dynamic_result, figsize=(15, 10)):
     """
@@ -3029,6 +3616,175 @@ def plot_dynamic_boxcount_results(dynamic_result, figsize=(15, 10)):
         if not threshold_met:
             print(f"WARNING: Fallback mode: No ranges met R² threshold, selected best available")
 
+def bootstrap_pairs(sizes,
+                    measures,
+                    mode='D0',
+                    n_bootstrap=1000,
+                    alpha=0.05,
+                    use_weighted_fit=True,
+                    random_seed=None,
+                    studentized=False,
+                ):
+    """
+    Compute fractal dimension confidence intervals using standard bootstrap resampling.
+    
+    This function implements the standard (non-parametric) bootstrap method for estimating
+    confidence intervals of fractal dimensions. Unlike residual bootstrap, this method
+    resamples the original data points (sizes, measures) with replacement, which can be
+    useful when the regression model assumptions are more severely violated or when you
+    want to account for uncertainty in both x and y variables.
+    
+    Parameters
+    ----------
+    sizes : array-like
+        Box sizes used in the scaling analysis
+    measures : array-like
+        Corresponding measures (box counts for D0, entropy values for D1)
+    mode : str, default 'D0'
+        Type of dimension to compute:
+        - 'D0': Capacity dimension using log10(N) vs log10(ε)
+        - 'D1': Information dimension using H vs log2(ε)
+    n_bootstrap : int, default 1000
+        Number of bootstrap resamples. More resamples give more stable confidence
+        intervals but increase computation time.
+    alpha : float, default 0.05
+        Significance level for confidence intervals. Default 0.05 gives 95% CI.
+        
+    Returns
+    -------
+    tuple
+        (d_median, d_lower, d_upper) where:
+        - d_median : float - Median fractal dimension over all bootstrap samples
+        - d_lower : float - Lower bound of confidence interval
+        - d_upper : float - Upper bound of confidence interval
+        
+    Notes
+    -----
+    Standard Bootstrap vs Residual Bootstrap:
+    
+    Standard Bootstrap (this function):
+    - Resamples (x,y) pairs with replacement
+    - Accounts for uncertainty in both box sizes and measures
+    - More robust when regression assumptions are severely violated
+    - Can handle cases where x-values have measurement error
+    - May be less efficient than residual bootstrap for well-behaved data
+    
+    Residual Bootstrap (bootstrap_residual):
+    - Resamples residuals while keeping x-values fixed
+    - Assumes x-values are known exactly
+    - More efficient for typical regression problems
+    - Better preserves the structure of the regression relationship
+    - Generally preferred for fractal dimension estimation
+    
+    When to Use Standard Bootstrap:
+    - When box sizes have significant measurement uncertainty
+    - When the regression relationship is highly non-linear
+    - When residual bootstrap assumptions are violated
+    - For exploratory analysis or robustness checks
+    
+    The method uses ordinary least squares for simplicity and speed, making it
+    suitable for quick confidence interval estimation. For more sophisticated
+    statistical analysis, consider using compute_dimension with residual bootstrap.
+    
+    Examples
+    --------
+    >>> sizes = [1, 2, 4, 8, 16, 32]
+    >>> counts = [1000, 250, 63, 16, 4, 1]
+    >>> d_med, d_low, d_high = bootstrap_pairs(sizes, counts, mode='D0', n_bootstrap=1000)
+    >>> print(f"D0 = {d_med:.3f} [{d_low:.3f}, {d_high:.3f}]")
+    
+    See Also
+    --------
+    bootstrap_residual : Residual bootstrap method (generally preferred)
+    compute_dimension : Main function with multiple bootstrap options
+    """
+    rng = np.random.default_rng(random_seed)
+    sizes = np.asarray(sizes, dtype=float)
+    measures = np.asarray(measures, dtype=float)
+    n = sizes.size
+
+    # helpers to match your residual function’s conventions
+    def prepare_xyw(sz, ms, mode, use_w):
+        if mode == 'D0':
+            x = np.log10(sz)
+            y = np.log10(ms)
+            w = ms if use_w else np.ones_like(x)            # var(log N) ~ 1/N
+        elif mode == 'D1':
+            x = np.log2(sz)
+            y = ms
+            w = (1.0 / (ms + 1e-10)) if use_w else np.ones_like(x)
+        else:
+            raise ValueError("mode must be 'D0' or 'D1'")
+        return x, y, w
+
+    def wls_slope(x, y, w=None, ridge=1e-12):
+        X = np.column_stack((x, np.ones_like(x)))
+        if w is None:
+            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+            yhat = X @ beta
+            # OLS cov
+            rss = np.sum((y - yhat)**2)
+            sigma2 = rss / (len(y) - 2)
+            cov = np.linalg.inv(X.T @ X) * sigma2
+            return beta[0], beta, yhat, cov
+        # WLS via sqrt(w) scaling
+        sw = np.sqrt(np.clip(w, 0.0, np.inf))
+        Xw = X * sw[:, None]
+        yw = y * sw
+        XtX = Xw.T @ Xw
+        XtX.flat[::XtX.shape[0]+1] += ridge
+        beta = np.linalg.solve(XtX, Xw.T @ yw)
+        yhat = X @ beta
+        # Unbiased sigma^2 under precision weights
+        sigma2 = np.sum(w * (y - yhat)**2) / (len(y) - 2)
+        cov = np.linalg.inv(X.T @ (w[:, None] * X)) * sigma2
+        return beta[0], beta, yhat, cov
+
+    # Point estimate on original data
+    x0, y0, w0 = prepare_xyw(sizes, measures, mode, use_weighted_fit)
+    slope_hat, beta_hat, yhat, cov_hat = wls_slope(x0, y0, (w0 if use_weighted_fit else None))
+    d_hat = -slope_hat
+    se_hat = float(np.sqrt(cov_hat[0, 0]))
+
+    d_samples = []
+    t_stats = [] if studentized else None
+
+    for _ in range(n_bootstrap):
+        idx = rng.integers(0, n, size=n)  # resample pairs
+        s_b = sizes[idx]
+        m_b = measures[idx]
+        x_b, y_b, w_b = prepare_xyw(s_b, m_b, mode, use_weighted_fit)
+
+        try:
+            slope_b, _, _, cov_b = wls_slope(x_b, y_b, (w_b if use_weighted_fit else None))
+        except np.linalg.LinAlgError:
+            # skip rare singular draws
+            continue
+
+        d_b = -slope_b
+        d_samples.append(d_b)
+
+        if studentized:
+            se_b = float(np.sqrt(cov_b[0, 0]))
+            # studentized pivot for slope, then map to D with a sign:
+            # t* = (slope_b - slope_hat)/se_b, same as -(d_b - d_hat)/se_b
+            t_stats.append((slope_b - slope_hat) / max(se_b, 1e-20))
+
+    d_samples = np.array(d_samples)
+
+    if d_samples.size == 0:
+        return d_hat, np.nan, np.nan
+
+    if studentized:
+        q_lo, q_hi = np.quantile(np.array(t_stats), [1 - alpha/2, alpha/2])
+        slope_low  = slope_hat - q_lo  * se_hat
+        slope_high = slope_hat - q_hi * se_hat
+        ci_low, ci_high = -slope_high, -slope_low
+    else:
+        # percentile CI on D directly
+        ci_low, ci_high = np.quantile(d_samples, [alpha/2, 1 - alpha/2])
+
+    return float(d_hat), float(ci_low), float(ci_high)
 
 def integral_image_d0(mask, sizes, offsets, use_min_count=False):
     """
@@ -3094,7 +3850,6 @@ def integral_image_d0(mask, sizes, offsets, use_min_count=False):
 
     return out
 
-
 def build_sat(mask: np.ndarray) -> np.ndarray:
     """Summed‑area table with 1‑pixel zero border (NumPy only)."""
     H, W = mask.shape
@@ -3104,7 +3859,6 @@ def build_sat(mask: np.ndarray) -> np.ndarray:
     sat.cumsum(axis=0, out=sat)
     sat.cumsum(axis=1, out=sat)
     return sat
-
 
 @njit(parallel=True, fastmath=True, cache=True)
 def counts_from_sat(sat, sizes, offsets, use_min):
