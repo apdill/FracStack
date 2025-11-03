@@ -33,3 +33,4 @@ BC_testing.ipynb
 /.venv-pyqt/
 .vscode/
 /backup/
+/fracstack/tiling.py
