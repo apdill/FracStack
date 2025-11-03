@@ -250,6 +250,7 @@ def plot_scaling_results(f_name,
                          legend = True):
     
     d_suffix = _format_dimension_suffix(d_value)
+    mode_suffix = f"_{mode}"  # Add mode suffix (D0, D1, D2) to distinguish from dimension value
 
     # Plot the original image
     if show_image == True:
@@ -318,7 +319,7 @@ def plot_scaling_results(f_name,
 
         if save == True:
             # This is the two-panel result (image + scaling plot)
-            save_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]}_result{d_suffix}.png")
+            save_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]}_result{mode_suffix}{d_suffix}.png")
             os.makedirs(os.path.dirname(save_file), exist_ok=True)
             plt.savefig(save_file)
 
@@ -386,7 +387,7 @@ def plot_scaling_results(f_name,
 
         if save == True:
             # This is the scaling plot only
-            save_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]}_scaling_plot{d_suffix}.png")
+            save_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]}_scaling_plot{mode_suffix}{d_suffix}.png")
             os.makedirs(os.path.dirname(save_file), exist_ok=True)
             plt.savefig(save_file)
         
@@ -987,130 +988,6 @@ def visualize_box_overlay(array, size, mode='D0', figsize=(10, 10), alpha=0.1, u
     
     if return_count:
         return count
-
-
-def plot_scaling_results(f_name = 'fractal image', 
-                         input_array = None, 
-                         sizes = None, 
-                         measures = None, 
-                         d_value = None, 
-                         fit = None, 
-                         r2 = None, 
-                         mode = 'D0', 
-                         show_image = True, 
-                         save=False, 
-                         save_path=None, 
-                         invert = False):
-    
-    # Plot the original image
-    if show_image == True:
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(22, 11))
-        
-        if invert == True:
-            ax1.imshow(invert_array(input_array), cmap='gray')
-        else:
-            ax1.imshow(input_array, cmap='gray')
-        
-        ax1.set_title(f"{os.path.splitext(f_name)[0]} || D value: {np.round(d_value, decimals=2)}", fontsize = 22)
-        ax1.axis('off')  
-    
-        # Plot the scaling (log-log) plot
-        if mode == 'D0':
-            ax2.scatter(np.log10(sizes), np.log10(measures), color='black')
-            ax2.plot(np.log10(sizes), fit[0] * np.log10(sizes) + fit[1], color='red')
-            ax2.set_title(r'Scaling Plot: $Log_{10}(Counts)$ vs. $Log_{10}(Box Size)$', fontsize = 22)
-            ax2.set_ylabel(r'$Log_{10}(N_L)$', fontsize = 22)
-        elif mode == 'D1':
-            ax2.scatter(np.log10(sizes), measures, color='black')
-            ax2.plot(np.log10(sizes), fit[0] * np.log2(sizes) + fit[1], color='red')
-            ax2.set_title(r'Shannon Entropy vs. $Log_{2}(Box Size)$', fontsize = 22)
-            ax2.set_ylabel(r'$H(L)$', fontsize = 22)
-
-        bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(sizes.min())} \nLargest box size (L) = {np.round(sizes.max())} \n$R^2$ = {np.round(r2, decimals=4)}"
-        
-        ax2.text(0.55, 0.95, bc_info_text, transform=ax2.transAxes, fontsize=22,
-                verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.1))
-        ax2.grid(True)
-        ax2.tick_params(axis='both', which='major', labelsize=18)
-        ax2.set_xlabel(r'$Log_{10}(L)$', fontsize = 22)
-        plt.tight_layout()
-        
-
-        if save == True:
-
-            save_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]}_{d_value:.3f}.png")
-            os.makedirs(os.path.dirname(save_file), exist_ok=True)
-            plt.savefig(save_file)
-
-
-
-    elif show_image == False:
-
-        plt.figure(figsize=(11,11))
-
-        if mode == 'D0':
-            plt.scatter(np.log10(sizes), np.log10(measures), color='black', )
-            plt.plot(np.log10(sizes), fit[0] * np.log10(sizes) + fit[1], color='red')
-        elif mode == 'D1':
-            plt.scatter(np.log10(sizes), measures, color='black')
-            plt.plot(np.log10(sizes), fit[0] * -np.log2(1/sizes) + fit[1], color='red')
-
-        plt.title(f"{os.path.splitext(f_name)[0]}", fontsize = 22)
-        bc_info_text = f"D Value: {np.round(d_value, decimals=2)} \nSmallest box size (L) = {np.round(sizes.min())} \nLargest box size (L) = {np.round(sizes.max())} \n$R^2$ = {np.round(r2, decimals=4)}"
-        plt.text(0.5, 0.95, bc_info_text, fontsize=22, transform=plt.gca().transAxes, verticalalignment='top', bbox=dict(boxstyle="round", alpha=0.1))
-        plt.grid(True)
-        plt.tick_params(axis='both', which='major', labelsize=18)
-        plt.xlabel(r'$Log(L)$', fontsize = 22)
-        plt.ylabel(r'$Log(N_L)$', fontsize = 22)
-        plt.tight_layout()
-        
-        if save == True:
-
-            save_file = os.path.join(save_path, f"{os.path.splitext(f_name)[0]}_scaling_plot.png")
-            os.makedirs(os.path.dirname(save_file), exist_ok=True)
-            plt.savefig(save_file)
-        
-
-def plot_object_outlines(image, largest_object, smallest_object, invert=False, figsize=(8,8)):
-
-    if invert:
-    
-        if image.dtype == np.bool or image.max() <= 1:
-            image = 1 - image  
-        else:
-            image = 255 - image  
-    
-    fig, ax = plt.subplots(figsize=figsize)
-    ax.imshow(image, cmap='gray')
-    
-    def plot_contours(obj, color, label):
-
-        obj_mask = obj.image
-        if obj_mask.shape[0] < 1 or obj_mask.shape[1] < 1:
-            print(f"Skipping {label}: object mask is too small ({obj_mask.shape}).")
-            return
-        
-        contours = find_contours(obj_mask, level=0.5)
-        
-        for contour in contours:
-            
-            contour[:, 0] += obj.bbox[0]
-            contour[:, 1] += obj.bbox[1]
-            
-            ax.plot(contour[:, 1], contour[:, 0], linewidth=2, color=color)
-        
-        ax.plot([], [], color=color, linewidth=2, label=label)
-
-    plot_contours(largest_object, 'red', 'Largest Object Outline')
-    plot_contours(smallest_object, 'blue', 'Smallest Object Outline')
-    
-    #ax.legend(loc='upper right')
-    ax.axis('off')  
-    plt.tight_layout()
-    plt.show()
-
-
 def illustrate_boxcounting_regions(input_array, sizes, counts, invert = False):
     for size, count in zip(sizes, counts):
         fig, ax = plt.subplots(figsize=(10, 10))
@@ -1238,26 +1115,6 @@ def show_largest_box_frame(input_array, sizes, counts, invert=False):
     plt.show()
 
     return largest_box_count
-
-
-def show_image_info(fname, d_value, input_array, sizes, invert = False, figsize = (11,11), save = False, save_path = None):
-
-    plt.figure(figsize=figsize)
-    if invert is True:
-        plt.imshow(invert_array(input_array), cmap='gray')
-    else:
-        plt.imshow(input_array, cmap='gray')
-    plt.axis('off')  # This turns off the axes (ticks and borders)
-    plt.title(f"{os.path.splitext(fname)[0]}", fontsize=22)  # Title above the image
-    plt.text(0.5, -0.2, 
-             f" D Value: {np.round(d_value, decimals=2):}\nSmallest box size = {np.round(sizes.min())} pixels\nLargest box size = {np.round(sizes.max())} pixels", 
-             fontsize=18, ha='center', transform=plt.gca().transAxes)
-    if save == True:
-        if save_path is not None:
-            save_file = os.path.join(save_path, f"image_info.png")
-            plt.savefig(save_file, bbox_inches='tight')
-        else: print('no save path for image info!')
-
 
 
 def showim(im_array, figsize=(4, 4), show_hist=False, nbins=None, bin_width=None, cmap='gray', vmin=None, vmax=None, titles=None):
