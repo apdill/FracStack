@@ -5,6 +5,7 @@ from sklearn.metrics import r2_score
 from scipy.stats import t
 import time
 from numba import njit, prange
+from typing import Optional
 from .image_processing import pad_image_for_boxcounting
 
 def generate_random_offsets(sizes, num_offsets, seed=None):
